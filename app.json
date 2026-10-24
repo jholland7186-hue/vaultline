@@ -50,7 +50,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Vaultline uses photos so you can confirm a bank or receipt screenshot before logging a spend."
+          "photosPermission": "Vaultline uses photos so you can confirm bank, Cash App, or paycheck screenshots before logging history.",
+          "cameraPermission": "Vaultline uses the camera so you can capture a transaction screen and confirm income or spends."
         }
       ]
     ],

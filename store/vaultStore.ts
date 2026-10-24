@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import {
   freshIncome,
+  isSampleVault,
   makeFreshPayPeriod,
   periodBoundsForCadence,
   periodLengthDays,
@@ -22,6 +23,7 @@ import {
 } from '@/lib/planningWindow';
 import type {
   Cadence,
+  IncomeEvent,
   IncomeProfile,
   LookbackMonths,
   Obligation,
@@ -76,12 +78,25 @@ interface VaultActions {
     >
   ) => void;
   addObligation: (input: NewObligationInput) => void;
+  removeObligation: (id: string) => void;
   /**
    * Log a spend. Optional ISO day (YYYY-MM-DD) for catch-up within lookback → today.
    * Defaults to today.
    */
   addSpend: (amount: number, bucket: SpendBucket, note: string, atDay?: string) => void;
-  /** Alias for loadDemo — keeps Spend “Reset demo data” working */
+  removeSpend: (id: string) => void;
+  /**
+   * Log a paycheck / deposit into lookback history (confirmed import or manual).
+   * Does not change the income profile amount/cadence.
+   */
+  addIncomeEvent: (
+    amount: number,
+    note: string,
+    atDay?: string,
+    source?: IncomeEvent['source']
+  ) => void;
+  removeIncomeEvent: (id: string) => void;
+  /** Alias for loadDemo — keeps Spend “Reload sample week” working */
   resetDemo: () => void;
 }
 
@@ -282,6 +297,50 @@ export function selectLookbackSpend(
     .reduce((sum, s) => sum + s.amount, 0);
 }
 
+/** Income events in the lookback → today window */
+export function selectLookbackIncome(
+  incomeEvents: IncomeEvent[],
+  lookbackMonths: LookbackMonths
+): number {
+  const start = planningLookbackStart(lookbackMonths);
+  const today = todayIsoDate();
+  return incomeEvents
+    .filter((e) => {
+      const day = e.at.slice(0, 10);
+      return day >= start && day <= today;
+    })
+    .reduce((sum, e) => sum + e.amount, 0);
+}
+
+/** Combined recent history (income + spends) newest first */
+export function selectRecentHistory(
+  spends: SpendEntry[],
+  incomeEvents: IncomeEvent[],
+  limit = 16
+): Array<
+  | { kind: 'spend'; id: string; amount: number; label: string; at: string; bucket: SpendBucket }
+  | { kind: 'income'; id: string; amount: number; label: string; at: string }
+> {
+  const rows = [
+    ...spends.map((s) => ({
+      kind: 'spend' as const,
+      id: s.id,
+      amount: s.amount,
+      label: s.note,
+      at: s.at,
+      bucket: s.bucket,
+    })),
+    ...incomeEvents.map((e) => ({
+      kind: 'income' as const,
+      id: e.id,
+      amount: e.amount,
+      label: e.note,
+      at: e.at,
+    })),
+  ];
+  return rows.sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit);
+}
+
 /** Soonest unpaid item that has an explicit scheduled pay-on date */
 export function selectNextScheduled(obligations: Obligation[]): ScheduleItem | null {
   const scheduled = selectPaymentSchedule(obligations).filter((i) => !!i.scheduledPayOn);
@@ -444,7 +503,17 @@ function normalizeIncome(income: IncomeProfile | undefined): IncomeProfile {
       cadence: income.cadence,
     };
   }
-  return { ...seedIncome };
+  // Empty / corrupt → blank shell, never re-inject sample paycheck
+  return { ...freshIncome };
+}
+
+/** True when the vault still carries explore-sample bills, spends, or goal */
+export function selectIsSampleVault(state: {
+  obligations: Obligation[];
+  spends: SpendEntry[];
+  goal: SavingsGoal | null;
+}): boolean {
+  return isSampleVault(state);
 }
 
 function normalizePayPeriod(period: PayPeriod, income: IncomeProfile): PayPeriod {
@@ -475,6 +544,7 @@ export const useVaultStore = create<Store>()(
       goal: null,
       obligations: [],
       spends: [],
+      incomeEvents: [],
       lookbackMonths: DEFAULT_LOOKBACK_MONTHS,
       setupComplete: false,
       hydrated: false,
@@ -484,16 +554,26 @@ export const useVaultStore = create<Store>()(
           income?: IncomeProfile;
           setupComplete?: boolean;
           lookbackMonths?: LookbackMonths;
+          incomeEvents?: IncomeEvent[];
         };
-        const { obligations, spends, payPeriod, income, setupComplete, lookbackMonths } =
-          state;
+        const {
+          obligations,
+          spends,
+          incomeEvents,
+          payPeriod,
+          income,
+          setupComplete,
+          lookbackMonths,
+        } = state;
         const nextIncome = normalizeIncome(income ?? freshIncome);
         const nextLookback = normalizeLookbackMonths(lookbackMonths);
+        const nextEvents = Array.isArray(incomeEvents) ? incomeEvents : [];
 
         // Brand-new empty vault — stay on setup, do not inject demo
         if (
           obligations.length === 0 &&
           spends.length === 0 &&
+          nextEvents.length === 0 &&
           !setupComplete &&
           (nextIncome.amountPerPaycheck <= 0 || !income)
         ) {
@@ -503,6 +583,7 @@ export const useVaultStore = create<Store>()(
             goal: null,
             obligations: [],
             spends: [],
+            incomeEvents: [],
             lookbackMonths: nextLookback,
             setupComplete: false,
             hydrated: true,
@@ -517,6 +598,7 @@ export const useVaultStore = create<Store>()(
             setupComplete === false && obligations.length === 0
               ? []
               : mergeSeedObligations(obligations),
+          incomeEvents: nextEvents,
           lookbackMonths: nextLookback,
           setupComplete: setupComplete ?? nextIncome.amountPerPaycheck > 0,
           hydrated: true,
@@ -568,6 +650,7 @@ export const useVaultStore = create<Store>()(
           goal: null,
           obligations: [],
           spends: [],
+          incomeEvents: [],
           lookbackMonths: normalizeLookbackMonths(lookbackMonths),
           setupComplete: false,
         });
@@ -581,6 +664,7 @@ export const useVaultStore = create<Store>()(
           goal: { ...seedGoal },
           obligations: cloneSeedObligations(),
           spends: seedSpends.map((s) => ({ ...s })),
+          incomeEvents: [],
           lookbackMonths: normalizeLookbackMonths(lookbackMonths),
           setupComplete: true,
         });
@@ -712,17 +796,45 @@ export const useVaultStore = create<Store>()(
         set({ obligations: [...get().obligations, entry] });
       },
 
+      removeObligation: (id) => {
+        set({ obligations: get().obligations.filter((o) => o.id !== id) });
+      },
+
       addSpend: (amount, bucket, note, atDay) => {
         const day = cleanIsoDate(atDay) ?? todayIso();
         const at = `${day}T12:00:00.000Z`;
         const entry: SpendEntry = {
-          id: `sp-${Date.now()}`,
+          id: `sp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           amount,
           bucket,
           note: note.trim() || bucketLabel(bucket),
           at,
         };
         set({ spends: [entry, ...get().spends] });
+      },
+
+      removeSpend: (id) => {
+        set({ spends: get().spends.filter((s) => s.id !== id) });
+      },
+
+      addIncomeEvent: (amount, note, atDay, source = 'manual') => {
+        if (!(amount > 0)) return;
+        const day = cleanIsoDate(atDay) ?? todayIso();
+        const at = `${day}T12:00:00.000Z`;
+        const entry: IncomeEvent = {
+          id: `in-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          amount,
+          note: note.trim() || 'Paycheck / deposit',
+          at,
+          source,
+        };
+        set({ incomeEvents: [entry, ...(get().incomeEvents ?? [])] });
+      },
+
+      removeIncomeEvent: (id) => {
+        set({
+          incomeEvents: (get().incomeEvents ?? []).filter((e) => e.id !== id),
+        });
       },
 
       resetDemo: () => {
@@ -738,6 +850,7 @@ export const useVaultStore = create<Store>()(
         goal: s.goal,
         obligations: s.obligations,
         spends: s.spends,
+        incomeEvents: s.incomeEvents,
         lookbackMonths: s.lookbackMonths,
         setupComplete: s.setupComplete,
       }),

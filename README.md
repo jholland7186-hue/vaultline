@@ -61,6 +61,12 @@ Notes:
 - Spend: optional backdate within the lookback window.
 - Waterfall / spend pot still use the **current pay period** (e.g. this week for weekly pay).
 
+## Screenshot history catch-up
+
+- Spend → **Screenshot history catch-up**: gallery (multi) or camera → optional paste → review **income / spend / bill** lines → **Confirm & save**.
+- On-device OCR via `expo-text-extractor` when the APK includes the native module; otherwise paste / best-effort. Always confirm.
+- Writes confirmed spends + income events into the lookback window (never silent).
+
 ## MVP scope
 
 - **Payday waterfall (local/virtual):** paycheck → obligations due this period → save-first → remainder = discretionary spend pot. Home shows spoken-for vs free-to-spend. No bank API.

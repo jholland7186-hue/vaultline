@@ -468,7 +468,7 @@ export default function HomeScreen() {
           </Text>
           <Link href="/spend" asChild>
             <Pressable style={styles.linkBtn}>
-              <Text style={styles.linkBtnText}>Log or screenshot a spend</Text>
+              <Text style={styles.linkBtnText}>Log or import screenshot history</Text>
             </Pressable>
           </Link>
         </View>
