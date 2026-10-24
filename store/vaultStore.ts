@@ -1,13 +1,28 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { seedGoal, seedObligations, seedPayPeriod, seedSpends } from '@/data/seed';
+import {
+  freshIncome,
+  makeFreshPayPeriod,
+  periodBoundsForCadence,
+  periodLengthDays,
+  seedGoal,
+  seedIncome,
+  seedObligations,
+  seedPayPeriod,
+  seedSpends,
+} from '@/data/seed';
 import type {
   Cadence,
+  IncomeProfile,
   Obligation,
   ObligationType,
+  PayCadence,
   PaydayWaterfall,
+  PaymentInstallment,
   PayPeriod,
+  SavingsGoal,
+  ScheduleItem,
   SpendBucket,
   SpendEntry,
   VaultState,
@@ -20,13 +35,29 @@ export type NewObligationInput = {
   dueDate: string;
   scheduledPayOn?: string | null;
   cadence: Cadence;
+  /** Optional split into N equal (or custom) installments with pay-on dates */
+  installments?: Array<{ amount: number; scheduledPayOn?: string | null }>;
 };
 
 interface VaultActions {
   hydrateDemoIfEmpty: () => void;
   markSaveCompleted: (done: boolean) => void;
+  setIncome: (amountPerPaycheck: number, cadence: PayCadence) => void;
+  setSaveTarget: (amount: number) => void;
+  setGoal: (goal: SavingsGoal | null) => void;
+  /** Clear sample data — weekly shell so Justin enters real numbers */
+  startFresh: () => void;
+  /** Load sample week to explore (not his real plan) */
+  loadDemo: () => void;
+  completeSetup: () => void;
   toggleObligationPaid: (id: string) => void;
+  toggleInstallmentPaid: (obligationId: string, installmentId: string) => void;
   setObligationScheduledPayOn: (id: string, scheduledPayOn: string | null) => void;
+  setInstallmentScheduledPayOn: (
+    obligationId: string,
+    installmentId: string,
+    scheduledPayOn: string | null
+  ) => void;
   updateObligation: (
     id: string,
     patch: Partial<
@@ -35,6 +66,7 @@ interface VaultActions {
   ) => void;
   addObligation: (input: NewObligationInput) => void;
   addSpend: (amount: number, bucket: SpendBucket, note: string) => void;
+  /** Alias for loadDemo — keeps Spend “Reset demo data” working */
   resetDemo: () => void;
 }
 
@@ -42,6 +74,16 @@ type Store = VaultState & VaultActions;
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function isIsoDate(value: string | null | undefined): value is string {
+  return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+function cleanIsoDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const t = value.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : null;
 }
 
 export function money(n: number): string {
@@ -65,6 +107,19 @@ export function obligationTypeLabel(type: Obligation['type']): string {
   }
 }
 
+export function payCadenceLabel(cadence: PayCadence): string {
+  switch (cadence) {
+    case 'weekly':
+      return 'Weekly';
+    case 'biweekly':
+      return 'Every 2 weeks';
+    case 'semi_monthly':
+      return 'Twice a month';
+    case 'monthly':
+      return 'Monthly';
+  }
+}
+
 export function bucketLabel(bucket: SpendBucket): string {
   switch (bucket) {
     case 'needs':
@@ -78,52 +133,151 @@ export function bucketLabel(bucket: SpendBucket): string {
   }
 }
 
+function hasInstallments(o: Obligation): o is Obligation & { installments: PaymentInstallment[] } {
+  return Array.isArray(o.installments) && o.installments.length > 0;
+}
+
+function syncObligationPaid(o: Obligation): Obligation {
+  if (!hasInstallments(o)) return o;
+  const allPaid = o.installments.every((i) => i.paid);
+  return { ...o, paid: allPaid };
+}
+
+/** Remaining unpaid amount on an obligation (installments or whole) */
+export function unpaidAmount(o: Obligation): number {
+  if (hasInstallments(o)) {
+    return o.installments.filter((i) => !i.paid).reduce((sum, i) => sum + i.amount, 0);
+  }
+  return o.paid ? 0 : o.amount;
+}
+
+/**
+ * Amount that counts toward waterfall "due this period" for one obligation.
+ * Unpaid only. Split bills contribute installment amounts whose pay-on (else due)
+ * falls in the period.
+ */
+export function periodSpokenForAmount(o: Obligation, period: PayPeriod): number {
+  if (hasInstallments(o)) {
+    return o.installments
+      .filter((i) => {
+        if (i.paid) return false;
+        const when = i.scheduledPayOn || o.dueDate;
+        return when >= period.start && when <= period.end;
+      })
+      .reduce((sum, i) => sum + i.amount, 0);
+  }
+  if (o.paid) return 0;
+  if (o.dueDate >= period.start && o.dueDate <= period.end) return o.amount;
+  return 0;
+}
+
 export function selectNextDue(obligations: Obligation[]): Obligation | null {
-  const unpaid = obligations.filter((o) => !o.paid);
+  const unpaid = obligations.filter((o) => unpaidAmount(o) > 0);
   if (unpaid.length === 0) return null;
   return [...unpaid].sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0] ?? null;
 }
 
-/** Sort key for payment schedule: planned pay-on, else due date */
-export function scheduleSortKey(o: Obligation): string {
-  return o.scheduledPayOn || o.dueDate;
+/** Sort key for a schedule row: planned pay-on, else due date */
+export function scheduleSortKey(item: { scheduledPayOn?: string | null; dueDate: string }): string {
+  return item.scheduledPayOn || item.dueDate;
 }
 
 /**
- * Upcoming payment schedule across all types — unpaid first by pay-on (or due).
- * Local planning only; not bank autopay.
+ * Upcoming payment schedule — unpaid whole bills and unpaid installments,
+ * sorted by pay-on (or due). Local planning only; not bank autopay.
  */
-export function selectPaymentSchedule(obligations: Obligation[]): Obligation[] {
-  return [...obligations]
-    .filter((o) => !o.paid)
-    .sort((a, b) => scheduleSortKey(a).localeCompare(scheduleSortKey(b)));
+export function selectPaymentSchedule(obligations: Obligation[]): ScheduleItem[] {
+  const items: ScheduleItem[] = [];
+
+  for (const o of obligations) {
+    if (hasInstallments(o)) {
+      const total = o.installments.length;
+      o.installments.forEach((inst, idx) => {
+        if (inst.paid) return;
+        items.push({
+          key: `${o.id}:${inst.id}`,
+          obligationId: o.id,
+          installmentId: inst.id,
+          name: o.name,
+          amount: inst.amount,
+          type: o.type,
+          dueDate: o.dueDate,
+          scheduledPayOn: inst.scheduledPayOn ?? null,
+          paid: false,
+          splitLabel: `${idx + 1} of ${total}`,
+        });
+      });
+    } else if (!o.paid) {
+      items.push({
+        key: o.id,
+        obligationId: o.id,
+        name: o.name,
+        amount: o.amount,
+        type: o.type,
+        dueDate: o.dueDate,
+        scheduledPayOn: o.scheduledPayOn ?? null,
+        paid: false,
+      });
+    }
+  }
+
+  return items.sort((a, b) => scheduleSortKey(a).localeCompare(scheduleSortKey(b)));
 }
 
 /** Soonest unpaid item that has an explicit scheduled pay-on date */
-export function selectNextScheduled(obligations: Obligation[]): Obligation | null {
-  const scheduled = obligations.filter((o) => !o.paid && !!o.scheduledPayOn);
+export function selectNextScheduled(obligations: Obligation[]): ScheduleItem | null {
+  const scheduled = selectPaymentSchedule(obligations).filter((i) => !!i.scheduledPayOn);
   if (scheduled.length === 0) return null;
-  return [...scheduled].sort((a, b) =>
-    (a.scheduledPayOn as string).localeCompare(b.scheduledPayOn as string)
-  )[0] ?? null;
+  return (
+    [...scheduled].sort((a, b) =>
+      (a.scheduledPayOn as string).localeCompare(b.scheduledPayOn as string)
+    )[0] ?? null
+  );
 }
 
 function normalizeObligation(o: Obligation): Obligation {
-  return {
+  const base: Obligation = {
     ...o,
     scheduledPayOn: o.scheduledPayOn ?? null,
   };
+  if (Array.isArray(o.installments) && o.installments.length > 0) {
+    base.installments = o.installments.map((i) => ({
+      ...i,
+      scheduledPayOn: i.scheduledPayOn ?? null,
+      paid: !!i.paid,
+    }));
+    return syncObligationPaid(base);
+  }
+  return base;
 }
 
-/** Patch missing seed schedules onto matching ids (first migrate after feature lands) */
-function mergeSeedSchedules(obligations: Obligation[]): Obligation[] {
+/**
+ * Patch missing seed schedules / splits onto matching seed ids only.
+ * Does not inject new demo bills into a personal vault.
+ */
+function mergeSeedObligations(obligations: Obligation[]): Obligation[] {
   const byId = new Map(seedObligations.map((s) => [s.id, s]));
   return obligations.map((o) => {
     const seed = byId.get(o.id);
-    if (o.scheduledPayOn === undefined && seed && seed.scheduledPayOn !== undefined) {
-      return { ...o, scheduledPayOn: seed.scheduledPayOn };
+    if (!seed) return normalizeObligation(o);
+
+    let next = normalizeObligation(o);
+    if (o.scheduledPayOn === undefined && seed.scheduledPayOn !== undefined) {
+      next = { ...next, scheduledPayOn: seed.scheduledPayOn };
     }
-    return normalizeObligation(o);
+    if (
+      (!o.installments || o.installments.length === 0) &&
+      seed.installments &&
+      seed.installments.length > 0
+    ) {
+      next = {
+        ...next,
+        amount: seed.amount,
+        installments: seed.installments.map((i) => ({ ...i })),
+        paid: seed.paid,
+      };
+    }
+    return normalizeObligation(next);
   });
 }
 
@@ -146,16 +300,23 @@ export function selectPeriodSpend(spends: SpendEntry[], period: PayPeriod): numb
 /**
  * Local/virtual payday waterfall (no bank):
  * 1) obligations due this period → 2) save-first → 3) remainder = discretionary pot
+ * Period inflow comes from income profile → payPeriod.paycheckAmount.
  */
 export function computePaydayWaterfall(
   period: PayPeriod,
   obligations: Obligation[]
 ): PaydayWaterfall {
   const paycheckAmount = Math.max(0, period.paycheckAmount ?? 0);
-  const due = obligations.filter(
-    (o) => o.dueDate >= period.start && o.dueDate <= period.end
-  );
-  const obligationsDue = due.reduce((sum, o) => sum + o.amount, 0);
+
+  let obligationsDue = 0;
+  let dueCount = 0;
+  for (const o of obligations) {
+    const slice = periodSpokenForAmount(o, period);
+    if (slice > 0) {
+      obligationsDue += slice;
+      dueCount += 1;
+    }
+  }
 
   let remaining = paycheckAmount;
   const obligSlice = Math.min(obligationsDue, remaining);
@@ -176,7 +337,7 @@ export function computePaydayWaterfall(
     discretionary,
     spokenFor,
     shortfall,
-    dueCount: due.length,
+    dueCount,
   };
 }
 
@@ -191,42 +352,167 @@ export function selectSpendAllowance(
   return period.weeklyAllowance ?? 0;
 }
 
-function normalizePayPeriod(period: PayPeriod): PayPeriod {
-  if (period.end && typeof period.paycheckAmount === 'number') return period;
+function buildPayPeriodFromIncome(
+  income: IncomeProfile,
+  prev?: PayPeriod
+): PayPeriod {
+  const bounds = periodBoundsForCadence(income.cadence);
+  let start = bounds.start;
+  let end = bounds.end;
+  if (prev?.start && isIsoDate(prev.start)) {
+    start = prev.start;
+    const startDate = new Date(prev.start + 'T12:00:00');
+    const endDate = new Date(startDate);
+    endDate.setDate(endDate.getDate() + periodLengthDays(income.cadence) - 1);
+    end = endDate.toISOString().slice(0, 10);
+  }
   return {
-    ...seedPayPeriod,
-    ...period,
-    end: period.end ?? seedPayPeriod.end,
-    paycheckAmount: period.paycheckAmount ?? seedPayPeriod.paycheckAmount,
+    start,
+    end,
+    paycheckAmount: Math.max(0, income.amountPerPaycheck),
+    saveTarget: prev?.saveTarget ?? seedPayPeriod.saveTarget,
+    saveCompleted: prev?.saveCompleted ?? false,
   };
+}
+
+function normalizeIncome(income: IncomeProfile | undefined): IncomeProfile {
+  if (
+    income &&
+    typeof income.amountPerPaycheck === 'number' &&
+    income.cadence
+  ) {
+    return {
+      amountPerPaycheck: Math.max(0, income.amountPerPaycheck),
+      cadence: income.cadence,
+    };
+  }
+  return { ...seedIncome };
+}
+
+function normalizePayPeriod(period: PayPeriod, income: IncomeProfile): PayPeriod {
+  if (period.end && typeof period.paycheckAmount === 'number') {
+    return {
+      ...period,
+      paycheckAmount: income.amountPerPaycheck,
+    };
+  }
+  return buildPayPeriodFromIncome(income, period);
+}
+
+function cloneSeedObligations(): Obligation[] {
+  return seedObligations.map((o) =>
+    normalizeObligation({
+      ...o,
+      installments: o.installments?.map((i) => ({ ...i })),
+    })
+  );
 }
 
 export const useVaultStore = create<Store>()(
   persist(
     (set, get) => ({
-      payPeriod: seedPayPeriod,
-      goal: seedGoal,
-      obligations: seedObligations,
-      spends: seedSpends,
+      // Fresh install: empty shell + setup prompt (no forced fake paycheck)
+      income: { ...freshIncome },
+      payPeriod: makeFreshPayPeriod(freshIncome),
+      goal: null,
+      obligations: [],
+      spends: [],
+      setupComplete: false,
       hydrated: false,
 
       hydrateDemoIfEmpty: () => {
-        const { obligations, spends, payPeriod } = get();
-        if (obligations.length === 0 && spends.length === 0) {
+        const state = get() as Store & { income?: IncomeProfile; setupComplete?: boolean };
+        const { obligations, spends, payPeriod, income, setupComplete } = state;
+        const nextIncome = normalizeIncome(income ?? freshIncome);
+
+        // Brand-new empty vault — stay on setup, do not inject demo
+        if (
+          obligations.length === 0 &&
+          spends.length === 0 &&
+          !setupComplete &&
+          (nextIncome.amountPerPaycheck <= 0 || !income)
+        ) {
           set({
-            payPeriod: seedPayPeriod,
-            goal: seedGoal,
-            obligations: seedObligations.map((o) => ({ ...o })),
-            spends: seedSpends,
+            income: { ...freshIncome },
+            payPeriod: makeFreshPayPeriod(freshIncome),
+            goal: null,
+            obligations: [],
+            spends: [],
+            setupComplete: false,
             hydrated: true,
           });
           return;
         }
+
         set({
-          payPeriod: normalizePayPeriod(payPeriod),
-          obligations: mergeSeedSchedules(obligations),
+          income: nextIncome,
+          payPeriod: normalizePayPeriod(payPeriod, nextIncome),
+          obligations:
+            setupComplete === false && obligations.length === 0
+              ? []
+              : mergeSeedObligations(obligations),
+          setupComplete: setupComplete ?? nextIncome.amountPerPaycheck > 0,
           hydrated: true,
         });
+      },
+
+      setIncome: (amountPerPaycheck, cadence) => {
+        const amount = Math.max(0, amountPerPaycheck);
+        const income: IncomeProfile = { amountPerPaycheck: amount, cadence };
+        const { payPeriod } = get();
+        set({
+          income,
+          payPeriod: buildPayPeriodFromIncome(income, payPeriod),
+        });
+      },
+
+      setSaveTarget: (amount) => {
+        const saveTarget = Math.max(0, amount);
+        const { payPeriod } = get();
+        set({
+          payPeriod: { ...payPeriod, saveTarget, saveCompleted: false },
+        });
+      },
+
+      setGoal: (goal) => {
+        if (!goal) {
+          set({ goal: null });
+          return;
+        }
+        const name = goal.name.trim() || 'Savings goal';
+        set({
+          goal: {
+            name,
+            targetAmount: Math.max(0, goal.targetAmount),
+            currentAmount: Math.max(0, goal.currentAmount),
+          },
+        });
+      },
+
+      startFresh: () => {
+        set({
+          income: { ...freshIncome },
+          payPeriod: makeFreshPayPeriod(freshIncome),
+          goal: null,
+          obligations: [],
+          spends: [],
+          setupComplete: false,
+        });
+      },
+
+      loadDemo: () => {
+        set({
+          income: { ...seedIncome },
+          payPeriod: { ...seedPayPeriod, saveCompleted: false },
+          goal: { ...seedGoal },
+          obligations: cloneSeedObligations(),
+          spends: seedSpends.map((s) => ({ ...s })),
+          setupComplete: true,
+        });
+      },
+
+      completeSetup: () => {
+        set({ setupComplete: true });
       },
 
       markSaveCompleted: (done) => {
@@ -255,21 +541,54 @@ export const useVaultStore = create<Store>()(
 
       toggleObligationPaid: (id) => {
         set({
-          obligations: get().obligations.map((o) =>
-            o.id === id ? { ...o, paid: !o.paid } : o
-          ),
+          obligations: get().obligations.map((o) => {
+            if (o.id !== id) return o;
+            if (hasInstallments(o)) {
+              const nextPaid = !o.paid;
+              return syncObligationPaid({
+                ...o,
+                paid: nextPaid,
+                installments: o.installments.map((i) => ({ ...i, paid: nextPaid })),
+              });
+            }
+            return { ...o, paid: !o.paid };
+          }),
+        });
+      },
+
+      toggleInstallmentPaid: (obligationId, installmentId) => {
+        set({
+          obligations: get().obligations.map((o) => {
+            if (o.id !== obligationId || !hasInstallments(o)) return o;
+            const installments = o.installments.map((i) =>
+              i.id === installmentId ? { ...i, paid: !i.paid } : i
+            );
+            return syncObligationPaid({ ...o, installments });
+          }),
         });
       },
 
       setObligationScheduledPayOn: (id, scheduledPayOn) => {
-        const cleaned =
-          scheduledPayOn && /^\d{4}-\d{2}-\d{2}$/.test(scheduledPayOn.trim())
-            ? scheduledPayOn.trim()
-            : null;
+        const cleaned = cleanIsoDate(scheduledPayOn);
         set({
           obligations: get().obligations.map((o) =>
             o.id === id ? { ...o, scheduledPayOn: cleaned } : o
           ),
+        });
+      },
+
+      setInstallmentScheduledPayOn: (obligationId, installmentId, scheduledPayOn) => {
+        const cleaned = cleanIsoDate(scheduledPayOn);
+        set({
+          obligations: get().obligations.map((o) => {
+            if (o.id !== obligationId || !hasInstallments(o)) return o;
+            return {
+              ...o,
+              installments: o.installments.map((i) =>
+                i.id === installmentId ? { ...i, scheduledPayOn: cleaned } : i
+              ),
+            };
+          }),
         });
       },
 
@@ -279,11 +598,7 @@ export const useVaultStore = create<Store>()(
             if (o.id !== id) return o;
             const next = { ...o, ...patch };
             if (patch.scheduledPayOn !== undefined) {
-              const raw = patch.scheduledPayOn;
-              next.scheduledPayOn =
-                raw && /^\d{4}-\d{2}-\d{2}$/.test(String(raw).trim())
-                  ? String(raw).trim()
-                  : null;
+              next.scheduledPayOn = cleanIsoDate(patch.scheduledPayOn);
             }
             return next;
           }),
@@ -293,22 +608,31 @@ export const useVaultStore = create<Store>()(
       addObligation: (input) => {
         const name = input.name.trim();
         if (!name || !(input.amount > 0)) return;
-        const dueDate =
-          input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate.trim())
-            ? input.dueDate.trim()
-            : todayIso();
-        const scheduledRaw = input.scheduledPayOn?.trim() ?? '';
-        const scheduledPayOn =
-          scheduledRaw && /^\d{4}-\d{2}-\d{2}$/.test(scheduledRaw) ? scheduledRaw : null;
+        const dueDate = cleanIsoDate(input.dueDate) ?? todayIso();
+        const scheduledPayOn = cleanIsoDate(input.scheduledPayOn ?? null);
+
+        let installments: PaymentInstallment[] | undefined;
+        if (input.installments && input.installments.length > 0) {
+          installments = input.installments
+            .filter((i) => i.amount > 0)
+            .map((i, idx) => ({
+              id: `ob-${Date.now()}-p${idx + 1}`,
+              amount: i.amount,
+              scheduledPayOn: cleanIsoDate(i.scheduledPayOn ?? null),
+              paid: false,
+            }));
+        }
+
         const entry: Obligation = {
           id: `ob-${Date.now()}`,
           name,
           amount: input.amount,
           type: input.type,
           dueDate,
-          scheduledPayOn,
+          scheduledPayOn: installments?.length ? null : scheduledPayOn,
           cadence: input.cadence,
           paid: false,
+          ...(installments?.length ? { installments } : {}),
         };
         set({ obligations: [...get().obligations, entry] });
       },
@@ -325,22 +649,19 @@ export const useVaultStore = create<Store>()(
       },
 
       resetDemo: () => {
-        set({
-          payPeriod: { ...seedPayPeriod, saveCompleted: false },
-          goal: { ...seedGoal },
-          obligations: seedObligations.map((o) => ({ ...o })),
-          spends: seedSpends.map((s) => ({ ...s })),
-        });
+        get().loadDemo();
       },
     }),
     {
-      name: 'vaultline-local-v2',
+      name: 'vaultline-local-v4',
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({
+        income: s.income,
         payPeriod: s.payPeriod,
         goal: s.goal,
         obligations: s.obligations,
         spends: s.spends,
+        setupComplete: s.setupComplete,
       }),
       onRehydrateStorage: () => (state) => {
         state?.hydrateDemoIfEmpty();

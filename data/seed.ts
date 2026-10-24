@@ -1,4 +1,11 @@
-import type { Obligation, PayPeriod, SavingsGoal, SpendEntry } from '@/types';
+import type {
+  IncomeProfile,
+  Obligation,
+  PayCadence,
+  PayPeriod,
+  SavingsGoal,
+  SpendEntry,
+} from '@/types';
 
 function isoDaysFromNow(days: number): string {
   const d = new Date();
@@ -7,7 +14,22 @@ function isoDaysFromNow(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-function periodBounds(days = 14): { start: string; end: string } {
+/** Days in one pay period for a given paycheck cadence */
+export function periodLengthDays(cadence: PayCadence): number {
+  switch (cadence) {
+    case 'weekly':
+      return 7;
+    case 'biweekly':
+      return 14;
+    case 'semi_monthly':
+      return 15;
+    case 'monthly':
+      return 30;
+  }
+}
+
+export function periodBoundsForCadence(cadence: PayCadence): { start: string; end: string } {
+  const days = periodLengthDays(cadence);
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const day = start.getDay();
@@ -21,15 +43,42 @@ function periodBounds(days = 14): { start: string; end: string } {
   };
 }
 
-const bounds = periodBounds(14);
+/**
+ * Sample income — weekly like Justin. Fake number for the explore-demo path;
+ * “Start fresh” clears this so he enters real take-home. Waterfall uses income
+ * as the period inflow (not a hard-coded $2400).
+ */
+export const seedIncome: IncomeProfile = {
+  amountPerPaycheck: 980,
+  cadence: 'weekly',
+};
+
+/** Empty weekly shell for real planning — Justin fills amount + save + bills */
+export const freshIncome: IncomeProfile = {
+  amountPerPaycheck: 0,
+  cadence: 'weekly',
+};
+
+const bounds = periodBoundsForCadence(seedIncome.cadence);
 
 export const seedPayPeriod: PayPeriod = {
   start: bounds.start,
   end: bounds.end,
-  paycheckAmount: 2400,
-  saveTarget: 200,
+  paycheckAmount: seedIncome.amountPerPaycheck,
+  saveTarget: 100,
   saveCompleted: false,
 };
+
+export function makeFreshPayPeriod(income: IncomeProfile = freshIncome): PayPeriod {
+  const b = periodBoundsForCadence(income.cadence);
+  return {
+    start: b.start,
+    end: b.end,
+    paycheckAmount: Math.max(0, income.amountPerPaycheck),
+    saveTarget: 0,
+    saveCompleted: false,
+  };
+}
 
 export const seedGoal: SavingsGoal = {
   name: 'Back-to-school fund',
@@ -97,6 +146,34 @@ export const seedObligations: Obligation[] = [
     scheduledPayOn: null,
     cadence: 'monthly',
     paid: true,
+  },
+  /**
+   * Split example: phone bill paid in two partials (amounts + own pay-on dates).
+   * Total matches obligation amount.
+   */
+  {
+    id: 'ob-tmobile',
+    name: 'T-Mobile',
+    amount: 140,
+    type: 'subscription',
+    dueDate: isoDaysFromNow(8),
+    scheduledPayOn: null,
+    cadence: 'monthly',
+    paid: false,
+    installments: [
+      {
+        id: 'ob-tmobile-p1',
+        amount: 70,
+        scheduledPayOn: isoDaysFromNow(1),
+        paid: false,
+      },
+      {
+        id: 'ob-tmobile-p2',
+        amount: 70,
+        scheduledPayOn: isoDaysFromNow(8),
+        paid: false,
+      },
+    ],
   },
 ];
 

@@ -1,5 +1,7 @@
+import * as ImagePicker from 'expo-image-picker';
 import React, { useMemo, useState } from 'react';
 import {
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,27 +11,59 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
-import type { SpendBucket } from '@/types';
+import { stubParseScreenshot } from '@/lib/screenshotParse';
+import type { ObligationType, PayCadence, SpendBucket } from '@/types';
 import {
   bucketLabel,
   money,
+  obligationTypeLabel,
+  payCadenceLabel,
   selectPeriodSpend,
   selectSpendAllowance,
   useVaultStore,
 } from '@/store/vaultStore';
 
 const BUCKETS: SpendBucket[] = ['needs', 'wants', 'eating_out', 'other'];
+const PAY_CADENCES: PayCadence[] = ['weekly', 'biweekly', 'semi_monthly', 'monthly'];
+const BILL_TYPES: ObligationType[] = [
+  'subscription',
+  'credit_card',
+  'insurance',
+  'rent',
+  'loan',
+  'cash_app_payback',
+];
 
 export default function SpendScreen() {
   const spends = useVaultStore((s) => s.spends);
+  const income = useVaultStore((s) => s.income);
   const payPeriod = useVaultStore((s) => s.payPeriod);
   const obligations = useVaultStore((s) => s.obligations);
   const addSpend = useVaultStore((s) => s.addSpend);
-  const resetDemo = useVaultStore((s) => s.resetDemo);
+  const addObligation = useVaultStore((s) => s.addObligation);
+  const setIncome = useVaultStore((s) => s.setIncome);
+  const startFresh = useVaultStore((s) => s.startFresh);
+  const loadDemo = useVaultStore((s) => s.loadDemo);
 
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [bucket, setBucket] = useState<SpendBucket>('wants');
+
+  const [showIncome, setShowIncome] = useState(false);
+  const [incomeAmount, setIncomeAmount] = useState(String(income.amountPerPaycheck || ''));
+  const [incomeCadence, setIncomeCadence] = useState<PayCadence>(income.cadence);
+
+  const [shotUri, setShotUri] = useState<string | null>(null);
+  const [shotName, setShotName] = useState('');
+  const [pastedText, setPastedText] = useState('');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [cAmount, setCAmount] = useState('');
+  const [cMerchant, setCMerchant] = useState('');
+  const [cBucket, setCBucket] = useState<SpendBucket>('wants');
+  const [cHint, setCHint] = useState('');
+  const [looksLikeBill, setLooksLikeBill] = useState(false);
+  const [billType, setBillType] = useState<ObligationType>('subscription');
+  const [alsoObligation, setAlsoObligation] = useState(false);
 
   const spendPot = useMemo(
     () => selectSpendAllowance(payPeriod, obligations),
@@ -59,13 +93,80 @@ export default function SpendScreen() {
     setNote('');
   };
 
+  const openIncome = () => {
+    setIncomeAmount(income.amountPerPaycheck > 0 ? String(income.amountPerPaycheck) : '');
+    setIncomeCadence(income.cadence);
+    setShowIncome(true);
+  };
+
+  const saveIncome = () => {
+    const n = Number.parseFloat(incomeAmount.replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(n) || n <= 0) return;
+    setIncome(n, incomeCadence);
+    setShowIncome(false);
+  };
+
+  const applyGuess = (fileName?: string | null) => {
+    const guess = stubParseScreenshot({ fileName, pastedText });
+    setCAmount(guess.amount != null ? String(guess.amount) : '');
+    setCMerchant(guess.merchant);
+    setCBucket(guess.bucket);
+    setCHint(guess.confidenceNote);
+    setLooksLikeBill(guess.looksLikeBill);
+    setAlsoObligation(guess.looksLikeBill);
+    if (guess.suggestedObligationType) setBillType(guess.suggestedObligationType);
+    setConfirmOpen(true);
+  };
+
+  const pickScreenshot = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setShotUri(asset.uri);
+    setShotName(asset.fileName ?? 'screenshot');
+    applyGuess(asset.fileName ?? 'screenshot');
+  };
+
+  const runStubOnPaste = () => {
+    applyGuess(shotName || null);
+  };
+
+  const confirmScreenshotSpend = () => {
+    const n = Number.parseFloat(cAmount.replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(n) || n <= 0) return;
+    const merchant = cMerchant.trim() || 'Screenshot spend';
+    addSpend(n, cBucket, merchant);
+    if (alsoObligation && looksLikeBill) {
+      const due = new Date();
+      due.setDate(due.getDate() + 7);
+      addObligation({
+        name: merchant,
+        amount: n,
+        type: billType,
+        cadence: 'monthly',
+        dueDate: due.toISOString().slice(0, 10),
+        scheduledPayOn: null,
+      });
+    }
+    setConfirmOpen(false);
+    setShotUri(null);
+    setShotName('');
+    setPastedText('');
+    setAlsoObligation(false);
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.brand}>Spend</Text>
         <Text style={styles.sub}>
-          Fast manual log against the payday spend pot ({money(periodSpend)} of{' '}
-          {money(spendPot)} used). Four buckets, no spreadsheet tax.
+          Log against the payday spend pot ({money(periodSpend)} of {money(spendPot)} used). Pot
+          comes from your {payCadenceLabel(income.cadence).toLowerCase()} take-home of{' '}
+          {money(income.amountPerPaycheck)}. Screenshot import is local stub OCR — you always
+          confirm.
         </Text>
 
         <Text style={styles.label}>Amount</Text>
@@ -109,6 +210,151 @@ export default function SpendScreen() {
           <Text style={styles.primaryBtnText}>Log spend</Text>
         </Pressable>
 
+        <Text style={[styles.label, { marginTop: 22 }]}>Screenshot → confirm → log</Text>
+        <Text style={styles.hint}>
+          Pick a bank/receipt image. Optional: paste amount/merchant text to help the stub. No
+          Plaid — confirm before anything is saved.
+        </Text>
+        <Pressable onPress={pickScreenshot} style={styles.secondaryBtn}>
+          <Text style={styles.secondaryBtnText}>Choose screenshot</Text>
+        </Pressable>
+        <Text style={styles.label}>Paste receipt text (optional)</Text>
+        <TextInput
+          value={pastedText}
+          onChangeText={setPastedText}
+          placeholder={'$12.34  Taco truck'}
+          placeholderTextColor={Colors.textMuted}
+          multiline
+          style={[styles.input, styles.pasteBox]}
+        />
+        <Pressable onPress={runStubOnPaste} style={styles.linkWrap}>
+          <Text style={styles.link}>Run stub read on pasted text</Text>
+        </Pressable>
+
+        {confirmOpen ? (
+          <View style={styles.confirmBox}>
+            {shotUri ? (
+              <Image source={{ uri: shotUri }} style={styles.preview} resizeMode="cover" />
+            ) : null}
+            <Text style={styles.hint}>{cHint}</Text>
+            <Text style={styles.label}>Amount</Text>
+            <TextInput
+              value={cAmount}
+              onChangeText={setCAmount}
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+            />
+            <Text style={styles.label}>Merchant / note</Text>
+            <TextInput
+              value={cMerchant}
+              onChangeText={setCMerchant}
+              placeholder="Where was this?"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+            />
+            <Text style={styles.label}>Bucket</Text>
+            <View style={styles.bucketRow}>
+              {BUCKETS.map((b) => {
+                const active = b === cBucket;
+                return (
+                  <Pressable
+                    key={b}
+                    onPress={() => setCBucket(b)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {bucketLabel(b)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {looksLikeBill ? (
+              <View style={styles.billSuggest}>
+                <Pressable onPress={() => setAlsoObligation((v) => !v)}>
+                  <Text style={styles.link}>
+                    {alsoObligation
+                      ? '✓ Also add as obligation (tap to skip)'
+                      : 'Looks like a bill — also add as obligation?'}
+                  </Text>
+                </Pressable>
+                {alsoObligation ? (
+                  <View style={styles.bucketRow}>
+                    {BILL_TYPES.map((t) => {
+                      const active = t === billType;
+                      return (
+                        <Pressable
+                          key={t}
+                          onPress={() => setBillType(t)}
+                          style={[styles.chip, active && styles.chipActive]}
+                        >
+                          <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                            {obligationTypeLabel(t)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+            <Pressable onPress={confirmScreenshotSpend} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>Confirm & log</Text>
+            </Pressable>
+            <Pressable onPress={() => setConfirmOpen(false)}>
+              <Text style={styles.linkMuted}>Cancel</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <Text style={[styles.label, { marginTop: 20 }]}>Income & pay schedule</Text>
+        <Text style={styles.incomeSummary}>
+          {payCadenceLabel(income.cadence)} · {money(income.amountPerPaycheck)} each payday
+        </Text>
+        <Pressable onPress={() => (showIncome ? setShowIncome(false) : openIncome())}>
+          <Text style={styles.link}>
+            {showIncome ? 'Cancel' : 'Edit what you make'}
+          </Text>
+        </Pressable>
+        {showIncome ? (
+          <View style={styles.incomeBox}>
+            <Text style={styles.hint}>
+              Take-home per payday. Waterfall uses it as period inflow — practical numbers only.
+            </Text>
+            <Text style={styles.label}>Amount per payday</Text>
+            <TextInput
+              value={incomeAmount}
+              onChangeText={setIncomeAmount}
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+              placeholderTextColor={Colors.textMuted}
+              style={styles.input}
+            />
+            <Text style={styles.label}>Pay schedule</Text>
+            <View style={styles.bucketRow}>
+              {PAY_CADENCES.map((c) => {
+                const active = c === incomeCadence;
+                return (
+                  <Pressable
+                    key={c}
+                    onPress={() => setIncomeCadence(c)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {payCadenceLabel(c)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable onPress={saveIncome} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>Save income</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         <Text style={[styles.label, { marginTop: 20 }]}>Bucket glance</Text>
         <View style={styles.glance}>
           {BUCKETS.map((b) => (
@@ -119,20 +365,27 @@ export default function SpendScreen() {
         </View>
 
         <Text style={[styles.label, { marginTop: 20 }]}>Recent</Text>
-        {spends.slice(0, 12).map((s) => (
-          <View key={s.id} style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{s.note}</Text>
-              <Text style={styles.rowMeta}>
-                {bucketLabel(s.bucket)} · {s.at.slice(0, 10)}
-              </Text>
+        {spends.length === 0 ? (
+          <Text style={styles.hint}>No spends yet — log one or confirm a screenshot.</Text>
+        ) : (
+          spends.slice(0, 12).map((s) => (
+            <View key={s.id} style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>{s.note}</Text>
+                <Text style={styles.rowMeta}>
+                  {bucketLabel(s.bucket)} · {s.at.slice(0, 10)}
+                </Text>
+              </View>
+              <Text style={styles.rowAmount}>{money(s.amount)}</Text>
             </View>
-            <Text style={styles.rowAmount}>{money(s.amount)}</Text>
-          </View>
-        ))}
+          ))
+        )}
 
-        <Pressable onPress={resetDemo} style={styles.resetBtn}>
-          <Text style={styles.resetText}>Reset demo data</Text>
+        <Pressable onPress={startFresh} style={styles.resetBtn}>
+          <Text style={styles.resetText}>Start fresh with my numbers</Text>
+        </Pressable>
+        <Pressable onPress={loadDemo} style={styles.resetBtn}>
+          <Text style={styles.resetText}>Reload sample week</Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>
@@ -167,6 +420,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.text,
   },
+  pasteBox: { minHeight: 72, textAlignVertical: 'top' },
   bucketRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     borderWidth: 1,
@@ -187,6 +441,60 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryBtnText: { color: Colors.cream, fontWeight: '700', fontSize: 15 },
+  secondaryBtn: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: Colors.forest,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    backgroundColor: Colors.cream,
+  },
+  secondaryBtnText: { color: Colors.forest, fontWeight: '700', fontSize: 15 },
+  incomeSummary: { fontSize: 14, color: Colors.textSecondary },
+  linkWrap: { marginTop: 4 },
+  link: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.forestMuted,
+    textDecorationLine: 'underline',
+    marginTop: 4,
+  },
+  linkMuted: {
+    marginTop: 10,
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.textMuted,
+    textDecorationLine: 'underline',
+    textAlign: 'center',
+  },
+  incomeBox: {
+    marginTop: 8,
+    gap: 6,
+    padding: 14,
+    backgroundColor: Colors.cream,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  confirmBox: {
+    marginTop: 10,
+    gap: 6,
+    padding: 14,
+    backgroundColor: Colors.cream,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  preview: {
+    width: '100%',
+    height: 140,
+    borderRadius: 12,
+    backgroundColor: Colors.sandDark,
+    marginBottom: 6,
+  },
+  billSuggest: { marginTop: 6, gap: 8 },
+  hint: { fontSize: 13, lineHeight: 18, color: Colors.textMuted },
   glance: { gap: 4 },
   glanceLine: { fontSize: 14, color: Colors.textSecondary },
   row: {
@@ -200,6 +508,6 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, fontWeight: '600', color: Colors.text },
   rowMeta: { fontSize: 12, color: Colors.textMuted, marginTop: 2 },
   rowAmount: { fontSize: 15, fontWeight: '700', color: Colors.copper },
-  resetBtn: { marginTop: 28, alignSelf: 'center', padding: 8 },
+  resetBtn: { marginTop: 16, alignSelf: 'center', padding: 8 },
   resetText: { fontSize: 13, color: Colors.textMuted, textDecorationLine: 'underline' },
 });

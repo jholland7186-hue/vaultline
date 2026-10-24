@@ -9,11 +9,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
-import type { Cadence, Obligation, ObligationType } from '@/types';
+import type { Cadence, ObligationType, ScheduleItem } from '@/types';
 import {
   money,
   obligationTypeLabel,
   selectPaymentSchedule,
+  unpaidAmount,
   useVaultStore,
 } from '@/store/vaultStore';
 
@@ -32,21 +33,23 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function scheduleLine(o: Obligation): string {
-  if (o.scheduledPayOn) {
-    return `Pay on ${o.scheduledPayOn} · due ${o.dueDate}`;
+function scheduleLine(item: ScheduleItem): string {
+  if (item.scheduledPayOn) {
+    return `Pay on ${item.scheduledPayOn} · due ${item.dueDate}`;
   }
-  return `Not scheduled · due ${o.dueDate}`;
+  return `Not scheduled · due ${item.dueDate}`;
 }
 
 export default function ObligationsScreen() {
   const obligations = useVaultStore((s) => s.obligations);
   const toggleObligationPaid = useVaultStore((s) => s.toggleObligationPaid);
+  const toggleInstallmentPaid = useVaultStore((s) => s.toggleInstallmentPaid);
   const setObligationScheduledPayOn = useVaultStore((s) => s.setObligationScheduledPayOn);
+  const setInstallmentScheduledPayOn = useVaultStore((s) => s.setInstallmentScheduledPayOn);
   const updateObligation = useVaultStore((s) => s.updateObligation);
   const addObligation = useVaultStore((s) => s.addObligation);
 
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editPayOn, setEditPayOn] = useState('');
   const [editDue, setEditDue] = useState('');
 
@@ -57,6 +60,8 @@ export default function ObligationsScreen() {
   const [cadence, setCadence] = useState<Cadence>('monthly');
   const [dueDate, setDueDate] = useState(todayIso());
   const [payOn, setPayOn] = useState('');
+  const [splitInto, setSplitInto] = useState(1);
+  const [splitPayOn2, setSplitPayOn2] = useState('');
 
   const schedule = useMemo(() => selectPaymentSchedule(obligations), [obligations]);
   const allSorted = useMemo(
@@ -64,40 +69,78 @@ export default function ObligationsScreen() {
     [obligations]
   );
 
-  const openEdit = (o: Obligation) => {
-    setEditingId(o.id);
-    setEditPayOn(o.scheduledPayOn ?? '');
-    setEditDue(o.dueDate);
+  const openEditSchedule = (item: ScheduleItem) => {
+    setEditingKey(item.key);
+    setEditPayOn(item.scheduledPayOn ?? '');
+    setEditDue(item.dueDate);
   };
 
-  const saveEdit = () => {
-    if (!editingId) return;
-    updateObligation(editingId, {
-      dueDate: editDue.trim() || todayIso(),
-      scheduledPayOn: editPayOn.trim() || null,
-    });
-    setEditingId(null);
+  const saveEditSchedule = (item: ScheduleItem) => {
+    if (item.installmentId) {
+      setInstallmentScheduledPayOn(item.obligationId, item.installmentId, editPayOn.trim() || null);
+    } else {
+      updateObligation(item.obligationId, {
+        dueDate: editDue.trim() || todayIso(),
+        scheduledPayOn: editPayOn.trim() || null,
+      });
+    }
+    setEditingKey(null);
   };
 
-  const clearPayOn = (id: string) => {
-    setObligationScheduledPayOn(id, null);
-    if (editingId === id) setEditPayOn('');
+  const clearPayOn = (item: ScheduleItem) => {
+    if (item.installmentId) {
+      setInstallmentScheduledPayOn(item.obligationId, item.installmentId, null);
+    } else {
+      setObligationScheduledPayOn(item.obligationId, null);
+    }
+    if (editingKey === item.key) setEditPayOn('');
+  };
+
+  const markSchedulePaid = (item: ScheduleItem) => {
+    if (item.installmentId) {
+      toggleInstallmentPaid(item.obligationId, item.installmentId);
+    } else {
+      toggleObligationPaid(item.obligationId);
+    }
   };
 
   const submitAdd = () => {
     const n = Number.parseFloat(amount.replace(/[^0-9.]/g, ''));
     if (!Number.isFinite(n) || n <= 0 || !name.trim()) return;
+
+    let installments: Array<{ amount: number; scheduledPayOn?: string | null }> | undefined;
+    if (splitInto >= 2) {
+      const parts = splitInto;
+      const base = Math.floor((n / parts) * 100) / 100;
+      installments = [];
+      let allocated = 0;
+      for (let i = 0; i < parts; i++) {
+        const amt = i === parts - 1 ? Math.round((n - allocated) * 100) / 100 : base;
+        allocated += amt;
+        const when =
+          i === 0
+            ? payOn.trim() || null
+            : i === 1
+              ? splitPayOn2.trim() || null
+              : null;
+        installments.push({ amount: amt, scheduledPayOn: when });
+      }
+    }
+
     addObligation({
       name,
       amount: n,
       type,
       cadence,
       dueDate: dueDate.trim() || todayIso(),
-      scheduledPayOn: payOn.trim() || null,
+      scheduledPayOn: splitInto >= 2 ? null : payOn.trim() || null,
+      installments,
     });
     setName('');
     setAmount('');
     setPayOn('');
+    setSplitPayOn2('');
+    setSplitInto(1);
     setDueDate(todayIso());
     setShowAdd(false);
   };
@@ -107,38 +150,93 @@ export default function ObligationsScreen() {
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.brand}>Due</Text>
         <Text style={styles.sub}>
-          Plan when you’ll pay — local schedule only, not bank autopay. Mark paid when the money
-          leaves.
+          Plan when you’ll pay — including partials on a split bill. Local schedule only, not bank
+          autopay. Mark a slice paid when that money leaves.
         </Text>
 
         <Text style={styles.section}>Payment schedule</Text>
         <Text style={styles.sectionHint}>
-          Upcoming unpaid bills sorted by pay-on (or due if not scheduled).
+          Upcoming unpaid payments sorted by pay-on (or due). Split bills show each installment.
         </Text>
 
         {schedule.length === 0 ? (
           <Text style={styles.empty}>Nothing unpaid — schedule is clear.</Text>
         ) : (
-          schedule.map((o, i) => (
-            <View key={`sched-${o.id}`} style={styles.schedRow}>
-              <Text style={styles.schedIndex}>{i + 1}</Text>
-              <View style={styles.schedBody}>
-                <View style={styles.rowTop}>
-                  <Text style={styles.name}>{o.name}</Text>
-                  <Text style={styles.amount}>{money(o.amount)}</Text>
+          schedule.map((item, i) => {
+            const isEditing = editingKey === item.key;
+            return (
+              <View key={item.key} style={styles.schedRow}>
+                <Text style={styles.schedIndex}>{i + 1}</Text>
+                <View style={styles.schedBody}>
+                  <Pressable onPress={() => markSchedulePaid(item)}>
+                    <View style={styles.rowTop}>
+                      <Text style={styles.name}>
+                        {item.name}
+                        {item.splitLabel ? ` · ${item.splitLabel}` : ''}
+                      </Text>
+                      <Text style={styles.amount}>{money(item.amount)}</Text>
+                    </View>
+                    <Text style={styles.meta}>
+                      {obligationTypeLabel(item.type)} · {scheduleLine(item)}
+                    </Text>
+                    <Text style={styles.statusUnpaid}>
+                      Unpaid — tap to mark this payment paid
+                    </Text>
+                  </Pressable>
+                  <View style={styles.editActions}>
+                    <Pressable
+                      onPress={() => (isEditing ? setEditingKey(null) : openEditSchedule(item))}
+                    >
+                      <Text style={styles.link}>
+                        {isEditing ? 'Cancel' : 'Set / edit pay-on'}
+                      </Text>
+                    </Pressable>
+                    {item.scheduledPayOn ? (
+                      <Pressable onPress={() => clearPayOn(item)}>
+                        <Text style={styles.linkMuted}>Clear schedule</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {isEditing ? (
+                    <View style={styles.editBox}>
+                      {!item.installmentId ? (
+                        <>
+                          <Text style={styles.label}>Due date (YYYY-MM-DD)</Text>
+                          <TextInput
+                            value={editDue}
+                            onChangeText={setEditDue}
+                            placeholder="2026-10-30"
+                            placeholderTextColor={Colors.textMuted}
+                            autoCapitalize="none"
+                            style={styles.input}
+                          />
+                        </>
+                      ) : null}
+                      <Text style={styles.label}>Pay on (YYYY-MM-DD)</Text>
+                      <TextInput
+                        value={editPayOn}
+                        onChangeText={setEditPayOn}
+                        placeholder="When you plan to pay this slice"
+                        placeholderTextColor={Colors.textMuted}
+                        autoCapitalize="none"
+                        style={styles.input}
+                      />
+                      <Pressable onPress={() => saveEditSchedule(item)} style={styles.primaryBtn}>
+                        <Text style={styles.primaryBtnText}>Save dates</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
                 </View>
-                <Text style={styles.meta}>
-                  {obligationTypeLabel(o.type)} · {scheduleLine(o)}
-                </Text>
               </View>
-            </View>
-          ))
+            );
+          })
         )}
 
         <Text style={[styles.section, { marginTop: 20 }]}>All obligations</Text>
 
         {allSorted.map((o) => {
-          const isEditing = editingId === o.id;
+          const remaining = unpaidAmount(o);
+          const split = o.installments && o.installments.length > 0;
           return (
             <View key={o.id} style={[styles.row, o.paid && styles.rowPaid]}>
               <Pressable onPress={() => toggleObligationPaid(o.id)}>
@@ -148,57 +246,43 @@ export default function ObligationsScreen() {
                 </View>
                 <Text style={styles.meta}>
                   {obligationTypeLabel(o.type)} · {o.cadence} · due {o.dueDate}
+                  {split ? ` · split ${o.installments!.length} ways` : ''}
                 </Text>
-                <Text style={styles.payOnMeta}>
-                  {o.scheduledPayOn
-                    ? `Scheduled pay-on ${o.scheduledPayOn}`
-                    : 'No pay-on date set'}
-                </Text>
+                {split ? (
+                  <View style={styles.splitList}>
+                    {o.installments!.map((inst, idx) => (
+                      <Pressable
+                        key={inst.id}
+                        onPress={() => toggleInstallmentPaid(o.id, inst.id)}
+                        style={styles.splitLine}
+                      >
+                        <Text
+                          style={[styles.splitText, inst.paid && styles.struck]}
+                        >
+                          {idx + 1}/{o.installments!.length} · {money(inst.amount)}
+                          {inst.scheduledPayOn
+                            ? ` · pay on ${inst.scheduledPayOn}`
+                            : ' · no pay-on'}
+                          {inst.paid ? ' · paid' : ' · tap to mark paid'}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.payOnMeta}>
+                    {o.scheduledPayOn
+                      ? `Scheduled pay-on ${o.scheduledPayOn}`
+                      : 'No pay-on date set'}
+                  </Text>
+                )}
                 <Text style={[styles.status, o.paid ? styles.paid : styles.unpaid]}>
-                  {o.paid ? 'Paid' : 'Unpaid — tap to mark paid'}
+                  {o.paid
+                    ? 'Paid'
+                    : split
+                      ? `${money(remaining)} left — tap name to mark all paid`
+                      : 'Unpaid — tap to mark paid'}
                 </Text>
               </Pressable>
-
-              {!o.paid ? (
-                <View style={styles.editActions}>
-                  <Pressable onPress={() => (isEditing ? setEditingId(null) : openEdit(o))}>
-                    <Text style={styles.link}>
-                      {isEditing ? 'Cancel' : 'Set / edit pay-on'}
-                    </Text>
-                  </Pressable>
-                  {o.scheduledPayOn ? (
-                    <Pressable onPress={() => clearPayOn(o.id)}>
-                      <Text style={styles.linkMuted}>Clear schedule</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ) : null}
-
-              {isEditing ? (
-                <View style={styles.editBox}>
-                  <Text style={styles.label}>Due date (YYYY-MM-DD)</Text>
-                  <TextInput
-                    value={editDue}
-                    onChangeText={setEditDue}
-                    placeholder="2026-10-30"
-                    placeholderTextColor={Colors.textMuted}
-                    autoCapitalize="none"
-                    style={styles.input}
-                  />
-                  <Text style={styles.label}>Pay on (YYYY-MM-DD)</Text>
-                  <TextInput
-                    value={editPayOn}
-                    onChangeText={setEditPayOn}
-                    placeholder="When you plan to pay"
-                    placeholderTextColor={Colors.textMuted}
-                    autoCapitalize="none"
-                    style={styles.input}
-                  />
-                  <Pressable onPress={saveEdit} style={styles.primaryBtn}>
-                    <Text style={styles.primaryBtnText}>Save dates</Text>
-                  </Pressable>
-                </View>
-              ) : null}
             </View>
           );
         })}
@@ -218,11 +302,11 @@ export default function ObligationsScreen() {
             <TextInput
               value={name}
               onChangeText={setName}
-              placeholder="e.g. Netflix"
+              placeholder="e.g. T-Mobile"
               placeholderTextColor={Colors.textMuted}
               style={styles.input}
             />
-            <Text style={styles.label}>Amount</Text>
+            <Text style={styles.label}>Amount (full obligation)</Text>
             <TextInput
               value={amount}
               onChangeText={setAmount}
@@ -272,15 +356,61 @@ export default function ObligationsScreen() {
               autoCapitalize="none"
               style={styles.input}
             />
-            <Text style={styles.label}>Scheduled pay-on (optional)</Text>
-            <TextInput
-              value={payOn}
-              onChangeText={setPayOn}
-              placeholder="YYYY-MM-DD — when you plan to pay"
-              placeholderTextColor={Colors.textMuted}
-              autoCapitalize="none"
-              style={styles.input}
-            />
+            <Text style={styles.label}>Split into payments</Text>
+            <View style={styles.chipRow}>
+              {[1, 2, 3, 4].map((n) => {
+                const active = splitInto === n;
+                return (
+                  <Pressable
+                    key={n}
+                    onPress={() => setSplitInto(n)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {n === 1 ? 'One payment' : `${n} payments`}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {splitInto === 1 ? (
+              <>
+                <Text style={styles.label}>Scheduled pay-on (optional)</Text>
+                <TextInput
+                  value={payOn}
+                  onChangeText={setPayOn}
+                  placeholder="YYYY-MM-DD — when you plan to pay"
+                  placeholderTextColor={Colors.textMuted}
+                  autoCapitalize="none"
+                  style={styles.input}
+                />
+              </>
+            ) : (
+              <>
+                <Text style={styles.hint}>
+                  Amounts split evenly (last slice gets the leftover cents). Set pay-on dates for
+                  the first two slices below.
+                </Text>
+                <Text style={styles.label}>1st payment pay-on (optional)</Text>
+                <TextInput
+                  value={payOn}
+                  onChangeText={setPayOn}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={Colors.textMuted}
+                  autoCapitalize="none"
+                  style={styles.input}
+                />
+                <Text style={styles.label}>2nd payment pay-on (optional)</Text>
+                <TextInput
+                  value={splitPayOn2}
+                  onChangeText={setSplitPayOn2}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor={Colors.textMuted}
+                  autoCapitalize="none"
+                  style={styles.input}
+                />
+              </>
+            )}
             <Pressable onPress={submitAdd} style={styles.primaryBtn}>
               <Text style={styles.primaryBtnText}>Save obligation</Text>
             </Pressable>
@@ -345,8 +475,12 @@ const styles = StyleSheet.create({
   meta: { fontSize: 13, color: Colors.textSecondary },
   payOnMeta: { fontSize: 13, color: Colors.forestMuted, fontWeight: '600' },
   status: { fontSize: 12, fontWeight: '700', marginTop: 2 },
+  statusUnpaid: { fontSize: 12, fontWeight: '700', marginTop: 2, color: Colors.copper },
   paid: { color: Colors.success },
   unpaid: { color: Colors.copper },
+  splitList: { marginTop: 4, gap: 4 },
+  splitLine: { paddingVertical: 2 },
+  splitText: { fontSize: 13, color: Colors.forestMuted, fontWeight: '600' },
   editActions: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -383,6 +517,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: Colors.copper,
   },
+  hint: { fontSize: 13, lineHeight: 18, color: Colors.textMuted },
   input: {
     backgroundColor: Colors.sand,
     borderWidth: 1,
