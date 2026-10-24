@@ -1,5 +1,5 @@
 import { Link } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Image,
   Pressable,
@@ -18,6 +18,7 @@ import {
   money,
   obligationTypeLabel,
   payCadenceLabel,
+  selectIsSampleVault,
   selectNextDue,
   selectNextScheduled,
   selectPeriodSpend,
@@ -63,6 +64,27 @@ export default function HomeScreen() {
   const [goalCurrent, setGoalCurrent] = useState(
     goal?.currentAmount ? String(goal.currentAmount) : '0'
   );
+
+  const showingSample = selectIsSampleVault({ obligations, spends, goal });
+
+  /** After clear-sample, wipe form fields so sample numbers don’t stick in the inputs */
+  useEffect(() => {
+    if (!setupComplete) {
+      setIncomeAmount(income.amountPerPaycheck > 0 ? String(income.amountPerPaycheck) : '');
+      setIncomeCadence(income.cadence);
+      setSaveAmount(payPeriod.saveTarget > 0 ? String(payPeriod.saveTarget) : '');
+      setGoalName(goal?.name ?? '');
+      setGoalTarget(goal?.targetAmount ? String(goal.targetAmount) : '');
+      setGoalCurrent(goal?.currentAmount ? String(goal.currentAmount) : '0');
+      setEditingIncome(false);
+      setEditingSave(false);
+      setEditingGoal(false);
+    }
+  }, [setupComplete, income, payPeriod.saveTarget, goal]);
+
+  const clearSampleAndPlan = () => {
+    startFresh();
+  };
 
   const waterfall = useMemo(
     () => computePaydayWaterfall(payPeriod, obligations),
@@ -145,6 +167,20 @@ export default function HomeScreen() {
             <Text style={styles.windowLine}>{planningWindowLabel(lookbackMonths)}</Text>
           </View>
         </View>
+
+        {showingSample && !needsSetup ? (
+          <View style={styles.sampleBanner}>
+            <Text style={styles.kicker}>Sample week</Text>
+            <Text style={styles.title}>This isn’t your real plan yet</Text>
+            <Text style={styles.body}>
+              Bills like Rent / T-Mobile and the sample spends are demo data. Clear them to enter
+              your take-home, then import screenshots or a bank statement on Spend.
+            </Text>
+            <Pressable onPress={clearSampleAndPlan} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>Clear sample & enter my numbers</Text>
+            </Pressable>
+          </View>
+        ) : null}
 
         {needsSetup ? (
           <View style={styles.setupBox}>
@@ -468,18 +504,26 @@ export default function HomeScreen() {
           </Text>
           <Link href="/spend" asChild>
             <Pressable style={styles.linkBtn}>
-              <Text style={styles.linkBtnText}>Log or screenshot a spend</Text>
+              <Text style={styles.linkBtnText}>Log or import screenshot history</Text>
             </Pressable>
           </Link>
         </View>
 
         {setupComplete ? (
           <View style={styles.footerLinks}>
-            <Pressable onPress={startFresh}>
-              <Text style={styles.linkMuted}>Start fresh with my numbers</Text>
-            </Pressable>
+            {showingSample ? (
+              <Pressable onPress={clearSampleAndPlan} style={styles.dangerBtn}>
+                <Text style={styles.dangerBtnText}>Clear sample & enter my numbers</Text>
+              </Pressable>
+            ) : (
+              <Pressable onPress={clearSampleAndPlan}>
+                <Text style={styles.linkMuted}>Clear everything & start over</Text>
+              </Pressable>
+            )}
             <Pressable onPress={loadDemo}>
-              <Text style={styles.linkMuted}>Reload sample week</Text>
+              <Text style={styles.linkMuted}>
+                {showingSample ? 'Reload sample week' : 'Load sample week (optional)'}
+              </Text>
             </Pressable>
           </View>
         ) : null}
@@ -514,6 +558,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
+  sampleBanner: {
+    gap: 8,
+    padding: 16,
+    backgroundColor: Colors.cream,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: Colors.copper,
+  },
+  dangerBtn: {
+    marginTop: 4,
+    backgroundColor: Colors.forest,
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+  },
+  dangerBtnText: { color: Colors.cream, fontWeight: '700', fontSize: 15 },
   kicker: {
     fontSize: 12,
     fontWeight: '700',

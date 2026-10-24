@@ -86,6 +86,34 @@ export const seedGoal: SavingsGoal = {
   currentAmount: 680,
 };
 
+/** Stable ids used by the explore-sample path — detects leftover sample vaults */
+export const SEED_OBLIGATION_IDS = [
+  'ob-cc',
+  'ob-ins',
+  'ob-rent',
+  'ob-loan',
+  'ob-cashapp',
+  'ob-sub',
+  'ob-tmobile',
+] as const;
+
+export const SEED_SPEND_IDS = ['sp-1', 'sp-2', 'sp-3'] as const;
+
+export function isSampleVault(input: {
+  obligations: Array<{ id: string }>;
+  spends: Array<{ id: string }>;
+  goal: SavingsGoal | null;
+}): boolean {
+  const seedOb = new Set<string>(SEED_OBLIGATION_IDS);
+  const seedSp = new Set<string>(SEED_SPEND_IDS);
+  if (input.obligations.some((o) => seedOb.has(o.id))) return true;
+  if (input.spends.some((s) => seedSp.has(s.id))) return true;
+  if (input.goal?.name === seedGoal.name && input.goal.targetAmount === seedGoal.targetAmount) {
+    return true;
+  }
+  return false;
+}
+
 export const seedObligations: Obligation[] = [
   {
     id: 'ob-cc',

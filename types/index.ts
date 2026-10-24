@@ -84,6 +84,19 @@ export interface SpendEntry {
   at: string;
 }
 
+/**
+ * Logged paycheck / deposit for lookback history (not the income profile).
+ * Confirmed from screenshot import or manual catch-up — never silent.
+ */
+export interface IncomeEvent {
+  id: string;
+  amount: number;
+  note: string;
+  /** ISO datetime */
+  at: string;
+  source?: 'manual' | 'screenshot' | 'statement';
+}
+
 export interface SavingsGoal {
   name: string;
   targetAmount: number;
@@ -126,6 +139,8 @@ export interface VaultState {
   goal: SavingsGoal | null;
   obligations: Obligation[];
   spends: SpendEntry[];
+  /** Confirmed paycheck / deposit history for lookback catch-up */
+  incomeEvents: IncomeEvent[];
   /**
    * Catch-up lookback: 1 or 2 months ending today.
    * Default 2 — enter past bills/spends to bring the ledger current.
