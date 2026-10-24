@@ -1,5 +1,5 @@
 import { Link } from 'expo-router';
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Image,
   Pressable,
@@ -11,9 +11,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import {
+  computePaydayWaterfall,
   money,
   obligationTypeLabel,
   selectNextDue,
+  selectPeriodSpend,
   selectTodaySpend,
   useVaultStore,
 } from '@/store/vaultStore';
@@ -25,9 +27,14 @@ export default function HomeScreen() {
   const spends = useVaultStore((s) => s.spends);
   const markSaveCompleted = useVaultStore((s) => s.markSaveCompleted);
 
+  const waterfall = useMemo(
+    () => computePaydayWaterfall(payPeriod, obligations),
+    [payPeriod, obligations]
+  );
   const nextDue = selectNextDue(obligations);
   const todaySpend = selectTodaySpend(spends);
-  const allowanceLeft = Math.max(0, payPeriod.weeklyAllowance - todaySpend);
+  const periodSpend = selectPeriodSpend(spends, payPeriod);
+  const freeLeft = Math.max(0, waterfall.discretionary - periodSpend);
   const goalPct =
     goal && goal.targetAmount > 0
       ? Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100))
@@ -48,12 +55,35 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.block}>
+          <Text style={styles.kicker}>Payday waterfall</Text>
+          <Text style={styles.title}>
+            {money(waterfall.discretionary)}
+            <Text style={styles.titleMuted}> free to spend</Text>
+          </Text>
+          <Text style={styles.body}>
+            Spoken for {money(waterfall.spokenFor)} of {money(waterfall.paycheckAmount)} — due{' '}
+            {money(waterfall.obligationsDue)}, then save {money(waterfall.saveSlice)}.
+            Remainder is the normal spend pot.
+          </Text>
+          {waterfall.shortfall > 0 ? (
+            <Text style={styles.warn}>
+              Short {money(waterfall.shortfall)} vs due + save on this paycheck.
+            </Text>
+          ) : null}
+          <Text style={styles.metaLine}>
+            {waterfall.dueCount} obligation{waterfall.dueCount === 1 ? '' : 's'} in{' '}
+            {payPeriod.start} → {payPeriod.end}
+          </Text>
+        </View>
+
+        <View style={styles.block}>
           <Text style={styles.kicker}>This pay period</Text>
           <Text style={styles.title}>
             {payPeriod.saveCompleted ? 'Save-first done' : 'Save before you spend'}
           </Text>
           <Text style={styles.body}>
-            Put {money(payPeriod.saveTarget)} in the vault before discretionary cash opens up.
+            Put {money(payPeriod.saveTarget)} in the vault (waterfall slice 2) before tapping into
+            the spend pot.
           </Text>
           <Pressable
             onPress={() => markSaveCompleted(!payPeriod.saveCompleted)}
@@ -109,13 +139,16 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.block}>
-          <Text style={styles.kicker}>Today’s spend</Text>
+          <Text style={styles.kicker}>Spend pot</Text>
           <Text style={styles.title}>
-            {money(todaySpend)}
-            <Text style={styles.titleMuted}> / {money(payPeriod.weeklyAllowance)} allowance</Text>
+            {money(periodSpend)}
+            <Text style={styles.titleMuted}>
+              {' '}
+              / {money(waterfall.discretionary)} this period
+            </Text>
           </Text>
           <Text style={styles.body}>
-            {money(allowanceLeft)} left in this week’s discretionary line.
+            {money(freeLeft)} left free to spend · today {money(todaySpend)}.
           </Text>
           <Link href="/spend" asChild>
             <Pressable style={styles.linkBtn}>
@@ -151,6 +184,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: '700', color: Colors.text, letterSpacing: -0.3 },
   titleMuted: { fontSize: 16, fontWeight: '500', color: Colors.textMuted },
   body: { fontSize: 15, lineHeight: 22, color: Colors.textSecondary },
+  warn: { fontSize: 14, lineHeight: 20, color: Colors.danger, fontWeight: '600' },
+  metaLine: { fontSize: 13, color: Colors.textMuted },
   primaryBtn: {
     marginTop: 8,
     backgroundColor: Colors.forest,

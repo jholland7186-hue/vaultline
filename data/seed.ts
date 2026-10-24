@@ -7,20 +7,28 @@ function isoDaysFromNow(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-function periodStart(): string {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  const day = d.getDay();
+function periodBounds(days = 14): { start: string; end: string } {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const day = start.getDay();
   const mondayOffset = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + mondayOffset);
-  return d.toISOString().slice(0, 10);
+  start.setDate(start.getDate() + mondayOffset);
+  const end = new Date(start);
+  end.setDate(end.getDate() + days - 1);
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
 }
 
+const bounds = periodBounds(14);
+
 export const seedPayPeriod: PayPeriod = {
-  start: periodStart(),
+  start: bounds.start,
+  end: bounds.end,
+  paycheckAmount: 2400,
   saveTarget: 200,
   saveCompleted: false,
-  weeklyAllowance: 150,
 };
 
 export const seedGoal: SavingsGoal = {

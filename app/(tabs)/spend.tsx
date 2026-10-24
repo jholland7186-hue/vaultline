@@ -10,18 +10,35 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
 import type { SpendBucket } from '@/types';
-import { bucketLabel, money, useVaultStore } from '@/store/vaultStore';
+import {
+  bucketLabel,
+  money,
+  selectPeriodSpend,
+  selectSpendAllowance,
+  useVaultStore,
+} from '@/store/vaultStore';
 
 const BUCKETS: SpendBucket[] = ['needs', 'wants', 'eating_out', 'other'];
 
 export default function SpendScreen() {
   const spends = useVaultStore((s) => s.spends);
+  const payPeriod = useVaultStore((s) => s.payPeriod);
+  const obligations = useVaultStore((s) => s.obligations);
   const addSpend = useVaultStore((s) => s.addSpend);
   const resetDemo = useVaultStore((s) => s.resetDemo);
 
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [bucket, setBucket] = useState<SpendBucket>('wants');
+
+  const spendPot = useMemo(
+    () => selectSpendAllowance(payPeriod, obligations),
+    [payPeriod, obligations]
+  );
+  const periodSpend = useMemo(
+    () => selectPeriodSpend(spends, payPeriod),
+    [spends, payPeriod]
+  );
 
   const totals = useMemo(() => {
     const map: Record<SpendBucket, number> = {
@@ -46,7 +63,10 @@ export default function SpendScreen() {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.brand}>Spend</Text>
-        <Text style={styles.sub}>Fast manual log — four buckets, no spreadsheet tax.</Text>
+        <Text style={styles.sub}>
+          Fast manual log against the payday spend pot ({money(periodSpend)} of{' '}
+          {money(spendPot)} used). Four buckets, no spreadsheet tax.
+        </Text>
 
         <Text style={styles.label}>Amount</Text>
         <TextInput

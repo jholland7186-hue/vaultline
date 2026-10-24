@@ -2,7 +2,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { seedGoal, seedObligations, seedPayPeriod, seedSpends } from '@/data/seed';
-import type { Obligation, SpendBucket, SpendEntry, VaultState } from '@/types';
+import type {
+  Obligation,
+  PaydayWaterfall,
+  PayPeriod,
+  SpendBucket,
+  SpendEntry,
+  VaultState,
+} from '@/types';
 
 interface VaultActions {
   hydrateDemoIfEmpty: () => void;
@@ -65,6 +72,73 @@ export function selectTodaySpend(spends: SpendEntry[]): number {
     .reduce((sum, s) => sum + s.amount, 0);
 }
 
+export function selectPeriodSpend(spends: SpendEntry[], period: PayPeriod): number {
+  return spends
+    .filter((s) => {
+      const day = s.at.slice(0, 10);
+      return day >= period.start && day <= period.end;
+    })
+    .reduce((sum, s) => sum + s.amount, 0);
+}
+
+/**
+ * Local/virtual payday waterfall (no bank):
+ * 1) obligations due this period → 2) save-first → 3) remainder = discretionary pot
+ */
+export function computePaydayWaterfall(
+  period: PayPeriod,
+  obligations: Obligation[]
+): PaydayWaterfall {
+  const paycheckAmount = Math.max(0, period.paycheckAmount ?? 0);
+  const due = obligations.filter(
+    (o) => o.dueDate >= period.start && o.dueDate <= period.end
+  );
+  const obligationsDue = due.reduce((sum, o) => sum + o.amount, 0);
+
+  let remaining = paycheckAmount;
+  const obligSlice = Math.min(obligationsDue, remaining);
+  remaining -= obligSlice;
+
+  const saveWanted = Math.max(0, period.saveTarget);
+  const saveSlice = Math.min(saveWanted, remaining);
+  remaining -= saveSlice;
+
+  const discretionary = remaining;
+  const spokenFor = obligSlice + saveSlice;
+  const shortfall = Math.max(0, obligationsDue + saveWanted - paycheckAmount);
+
+  return {
+    paycheckAmount,
+    obligationsDue: obligSlice,
+    saveSlice,
+    discretionary,
+    spokenFor,
+    shortfall,
+    dueCount: due.length,
+  };
+}
+
+/** Prefer waterfall remainder; fall back to legacy weeklyAllowance for old local state */
+export function selectSpendAllowance(
+  period: PayPeriod,
+  obligations: Obligation[]
+): number {
+  if (typeof period.paycheckAmount === 'number' && period.end) {
+    return computePaydayWaterfall(period, obligations).discretionary;
+  }
+  return period.weeklyAllowance ?? 0;
+}
+
+function normalizePayPeriod(period: PayPeriod): PayPeriod {
+  if (period.end && typeof period.paycheckAmount === 'number') return period;
+  return {
+    ...seedPayPeriod,
+    ...period,
+    end: period.end ?? seedPayPeriod.end,
+    paycheckAmount: period.paycheckAmount ?? seedPayPeriod.paycheckAmount,
+  };
+}
+
 export const useVaultStore = create<Store>()(
   persist(
     (set, get) => ({
@@ -75,7 +149,7 @@ export const useVaultStore = create<Store>()(
       hydrated: false,
 
       hydrateDemoIfEmpty: () => {
-        const { obligations, spends } = get();
+        const { obligations, spends, payPeriod } = get();
         if (obligations.length === 0 && spends.length === 0) {
           set({
             payPeriod: seedPayPeriod,
@@ -86,7 +160,7 @@ export const useVaultStore = create<Store>()(
           });
           return;
         }
-        set({ hydrated: true });
+        set({ payPeriod: normalizePayPeriod(payPeriod), hydrated: true });
       },
 
       markSaveCompleted: (done) => {

@@ -37,11 +37,30 @@ export interface SavingsGoal {
 }
 
 export interface PayPeriod {
-  /** ISO date period start */
+  /** ISO date period start (payday) */
   start: string;
+  /** ISO date period end (inclusive) */
+  end: string;
+  /** Gross paycheck / cash for this period (local virtual — no bank) */
+  paycheckAmount: number;
   saveTarget: number;
   saveCompleted: boolean;
-  weeklyAllowance: number;
+  /**
+   * Legacy discretionary override. Prefer waterfall remainder when present;
+   * kept for older persisted local state.
+   */
+  weeklyAllowance?: number;
+}
+
+/** Local payday allocation — no bank API */
+export interface PaydayWaterfall {
+  paycheckAmount: number;
+  obligationsDue: number;
+  saveSlice: number;
+  discretionary: number;
+  spokenFor: number;
+  shortfall: number;
+  dueCount: number;
 }
 
 export interface VaultState {

@@ -16,7 +16,8 @@ bun start     # Expo Dev Tools (pick platform)
 
 ## MVP scope
 
-- Home: save-first checkbox, primary goal progress, next due, today’s spend vs allowance
+- **Payday waterfall (local/virtual):** paycheck → obligations due this period → save-first → remainder = discretionary spend pot. Home shows spoken-for vs free-to-spend. No bank API.
+- Home: waterfall glance, save-first checkbox, primary goal progress, next due, spend pot usage
 - Obligations: credit card, insurance, rent, loan, Cash App payback, subscription
 - Manual spend log with needs / wants / eating out / other
 - Seed demo data (AsyncStorage / Zustand persist)
