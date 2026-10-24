@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
+import { planningWindowLabel } from '@/lib/planningWindow';
 import type { PayCadence } from '@/types';
 import {
   computePaydayWaterfall,
@@ -33,6 +34,7 @@ export default function HomeScreen() {
   const goal = useVaultStore((s) => s.goal);
   const obligations = useVaultStore((s) => s.obligations);
   const spends = useVaultStore((s) => s.spends);
+  const lookbackMonths = useVaultStore((s) => s.lookbackMonths);
   const setupComplete = useVaultStore((s) => s.setupComplete);
   const markSaveCompleted = useVaultStore((s) => s.markSaveCompleted);
   const setIncome = useVaultStore((s) => s.setIncome);
@@ -140,16 +142,18 @@ export default function HomeScreen() {
           <View>
             <Text style={styles.brand}>Vaultline</Text>
             <Text style={styles.tagline}>Save first. See what’s due.</Text>
+            <Text style={styles.windowLine}>{planningWindowLabel(lookbackMonths)}</Text>
           </View>
         </View>
 
         {needsSetup ? (
           <View style={styles.setupBox}>
-            <Text style={styles.kicker}>Your week, your numbers</Text>
+            <Text style={styles.kicker}>Your numbers</Text>
             <Text style={styles.title}>Plan with what you actually make</Text>
             <Text style={styles.body}>
-              Enter take-home and how often you’re paid. Add bills on Due (splits OK). Waterfall
-              will show spoken-for vs free-to-spend — practical, no lecture.
+              Enter take-home and how often you’re paid. Catch up {lookbackMonths} month
+              {lookbackMonths === 1 ? '' : 's'} of bills and spends through today on Due / Spend —
+              waterfall still uses this pay period for spoken-for vs free.
             </Text>
 
             <Text style={styles.label}>Take-home each payday</Text>
@@ -500,6 +504,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   tagline: { fontSize: 14, color: Colors.textSecondary, marginTop: 2 },
+  windowLine: { fontSize: 12, color: Colors.textMuted, marginTop: 4 },
   block: { gap: 8 },
   setupBox: {
     gap: 8,

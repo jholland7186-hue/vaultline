@@ -4,6 +4,8 @@ Save-first spend coach with obligations clarity — Android + Web, local-first.
 
 Brand: forest green `#1B4332`, copper `#C47A3A`, sand `#F3EDE3`.
 
+Expo account: `zerofallen001` · projectId in `app.json` (`extra.eas.projectId`).
+
 ## Run
 
 ```bash
@@ -13,6 +15,51 @@ bun run web   # web
 bun run android
 bun start     # Expo Dev Tools (pick platform)
 ```
+
+## Android APK (preview)
+
+```bash
+bun run build:apk
+# same as: eas build -p android --profile preview
+```
+
+Preview builds use EAS Update **channel `preview`**. Production profile uses channel **`production`**.
+
+## OTA updates (EAS Update)
+
+Config (no secrets in repo):
+
+- `app.json`: `runtimeVersion.policy = appVersion`, `updates.url = https://u.expo.dev/<projectId>`
+- `eas.json`: build profiles set `channel` (`preview` / `production` / `development`)
+- Dependency: `expo-updates`
+
+Publish a JS/asset update to the preview APK channel:
+
+```bash
+eas update --channel preview --message "what changed"
+# or: bun run update:preview -- "what changed"
+```
+
+Production channel (after a production build):
+
+```bash
+eas update --channel production --message "what changed"
+# or: bun run update:production -- "what changed"
+```
+
+Notes:
+
+- OTA only ships JS/assets compatible with the build’s **runtimeVersion** (tied to `expo.version`, currently `0.1.0`). Native changes need a new APK/AAB.
+- Rebuild the preview APK once after this wiring so the binary embeds the update channel + URL. Older APKs without `expo-updates` / channel won’t receive OTAs.
+- Never commit Expo tokens or `.env` secrets — use `eas login` locally / CI secrets.
+
+## Planning lookback
+
+- Default **2 months** of catch-up history through today (Spend → **Planning lookback**: 1 or 2 months).
+- UI copy: “Planning from [start] → today”.
+- Due: catch-up section (lookback → today) + upcoming ~1 month forward.
+- Spend: optional backdate within the lookback window.
+- Waterfall / spend pot still use the **current pay period** (e.g. this week for weekly pay).
 
 ## MVP scope
 

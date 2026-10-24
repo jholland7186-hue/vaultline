@@ -9,11 +9,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
+import {
+  forwardGlanceEnd,
+  planningLookbackStart,
+  planningWindowLabel,
+  todayIsoDate,
+} from '@/lib/planningWindow';
 import type { Cadence, ObligationType, ScheduleItem } from '@/types';
 import {
   money,
   obligationTypeLabel,
-  selectPaymentSchedule,
+  selectCatchUpSchedule,
+  selectForwardSchedule,
   unpaidAmount,
   useVaultStore,
 } from '@/store/vaultStore';
@@ -30,7 +37,7 @@ const TYPES: ObligationType[] = [
 const CADENCES: Cadence[] = ['once', 'weekly', 'biweekly', 'monthly'];
 
 function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayIsoDate();
 }
 
 function scheduleLine(item: ScheduleItem): string {
@@ -42,6 +49,7 @@ function scheduleLine(item: ScheduleItem): string {
 
 export default function ObligationsScreen() {
   const obligations = useVaultStore((s) => s.obligations);
+  const lookbackMonths = useVaultStore((s) => s.lookbackMonths);
   const toggleObligationPaid = useVaultStore((s) => s.toggleObligationPaid);
   const toggleInstallmentPaid = useVaultStore((s) => s.toggleInstallmentPaid);
   const setObligationScheduledPayOn = useVaultStore((s) => s.setObligationScheduledPayOn);
@@ -63,11 +71,85 @@ export default function ObligationsScreen() {
   const [splitInto, setSplitInto] = useState(1);
   const [splitPayOn2, setSplitPayOn2] = useState('');
 
-  const schedule = useMemo(() => selectPaymentSchedule(obligations), [obligations]);
+  const lookbackStart = planningLookbackStart(lookbackMonths);
+  const forwardEnd = forwardGlanceEnd();
+  const catchUp = useMemo(
+    () => selectCatchUpSchedule(obligations, lookbackMonths),
+    [obligations, lookbackMonths]
+  );
+  const upcoming = useMemo(() => selectForwardSchedule(obligations), [obligations]);
   const allSorted = useMemo(
     () => [...obligations].sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
     [obligations]
   );
+
+  const renderScheduleItem = (item: ScheduleItem, i: number) => {
+    const isEditing = editingKey === item.key;
+    return (
+      <View key={item.key} style={styles.schedRow}>
+        <Text style={styles.schedIndex}>{i + 1}</Text>
+        <View style={styles.schedBody}>
+          <Pressable onPress={() => markSchedulePaid(item)}>
+            <View style={styles.rowTop}>
+              <Text style={styles.name}>
+                {item.name}
+                {item.splitLabel ? ` · ${item.splitLabel}` : ''}
+              </Text>
+              <Text style={styles.amount}>{money(item.amount)}</Text>
+            </View>
+            <Text style={styles.meta}>
+              {obligationTypeLabel(item.type)} · {scheduleLine(item)}
+            </Text>
+            <Text style={styles.statusUnpaid}>Unpaid — tap to mark this payment paid</Text>
+          </Pressable>
+          <View style={styles.editActions}>
+            <Pressable
+              onPress={() => (isEditing ? setEditingKey(null) : openEditSchedule(item))}
+            >
+              <Text style={styles.link}>{isEditing ? 'Cancel' : 'Set / edit pay-on'}</Text>
+            </Pressable>
+            {item.scheduledPayOn ? (
+              <Pressable onPress={() => clearPayOn(item)}>
+                <Text style={styles.linkMuted}>Clear schedule</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {isEditing ? (
+            <View style={styles.editBox}>
+              {!item.installmentId ? (
+                <>
+                  <Text style={styles.label}>Due date (YYYY-MM-DD)</Text>
+                  <TextInput
+                    value={editDue}
+                    onChangeText={setEditDue}
+                    placeholder={`${lookbackStart} … ${forwardEnd}`}
+                    placeholderTextColor={Colors.textMuted}
+                    autoCapitalize="none"
+                    style={styles.input}
+                  />
+                </>
+              ) : null}
+              <Text style={styles.label}>Pay on (YYYY-MM-DD)</Text>
+              <TextInput
+                value={editPayOn}
+                onChangeText={setEditPayOn}
+                placeholder="When you plan to pay this slice"
+                placeholderTextColor={Colors.textMuted}
+                autoCapitalize="none"
+                style={styles.input}
+              />
+              <Text style={styles.hint}>
+                Catch-up: {lookbackStart} → today. Upcoming: through {forwardEnd}.
+              </Text>
+              <Pressable onPress={() => saveEditSchedule(item)} style={styles.primaryBtn}>
+                <Text style={styles.primaryBtnText}>Save dates</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      </View>
+    );
+  };
 
   const openEditSchedule = (item: ScheduleItem) => {
     setEditingKey(item.key);
@@ -150,86 +232,29 @@ export default function ObligationsScreen() {
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.brand}>Due</Text>
         <Text style={styles.sub}>
-          Plan when you’ll pay — including partials on a split bill. Local schedule only, not bank
-          autopay. Mark a slice paid when that money leaves.
+          {planningWindowLabel(lookbackMonths)}. Enter past dues/pay-ons to catch up, then mark
+          paid. Local schedule only — not bank autopay. Upcoming glance through {forwardEnd}.
         </Text>
 
-        <Text style={styles.section}>Payment schedule</Text>
+        <Text style={styles.section}>Catch up (lookback → today)</Text>
         <Text style={styles.sectionHint}>
-          Upcoming unpaid payments sorted by pay-on (or due). Split bills show each installment.
+          Unpaid from {lookbackStart} through today — bring the ledger current. Splits show each
+          installment.
         </Text>
-
-        {schedule.length === 0 ? (
-          <Text style={styles.empty}>Nothing unpaid — schedule is clear.</Text>
+        {catchUp.length === 0 ? (
+          <Text style={styles.empty}>Nothing unpaid in the lookback window.</Text>
         ) : (
-          schedule.map((item, i) => {
-            const isEditing = editingKey === item.key;
-            return (
-              <View key={item.key} style={styles.schedRow}>
-                <Text style={styles.schedIndex}>{i + 1}</Text>
-                <View style={styles.schedBody}>
-                  <Pressable onPress={() => markSchedulePaid(item)}>
-                    <View style={styles.rowTop}>
-                      <Text style={styles.name}>
-                        {item.name}
-                        {item.splitLabel ? ` · ${item.splitLabel}` : ''}
-                      </Text>
-                      <Text style={styles.amount}>{money(item.amount)}</Text>
-                    </View>
-                    <Text style={styles.meta}>
-                      {obligationTypeLabel(item.type)} · {scheduleLine(item)}
-                    </Text>
-                    <Text style={styles.statusUnpaid}>
-                      Unpaid — tap to mark this payment paid
-                    </Text>
-                  </Pressable>
-                  <View style={styles.editActions}>
-                    <Pressable
-                      onPress={() => (isEditing ? setEditingKey(null) : openEditSchedule(item))}
-                    >
-                      <Text style={styles.link}>
-                        {isEditing ? 'Cancel' : 'Set / edit pay-on'}
-                      </Text>
-                    </Pressable>
-                    {item.scheduledPayOn ? (
-                      <Pressable onPress={() => clearPayOn(item)}>
-                        <Text style={styles.linkMuted}>Clear schedule</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                  {isEditing ? (
-                    <View style={styles.editBox}>
-                      {!item.installmentId ? (
-                        <>
-                          <Text style={styles.label}>Due date (YYYY-MM-DD)</Text>
-                          <TextInput
-                            value={editDue}
-                            onChangeText={setEditDue}
-                            placeholder="2026-10-30"
-                            placeholderTextColor={Colors.textMuted}
-                            autoCapitalize="none"
-                            style={styles.input}
-                          />
-                        </>
-                      ) : null}
-                      <Text style={styles.label}>Pay on (YYYY-MM-DD)</Text>
-                      <TextInput
-                        value={editPayOn}
-                        onChangeText={setEditPayOn}
-                        placeholder="When you plan to pay this slice"
-                        placeholderTextColor={Colors.textMuted}
-                        autoCapitalize="none"
-                        style={styles.input}
-                      />
-                      <Pressable onPress={() => saveEditSchedule(item)} style={styles.primaryBtn}>
-                        <Text style={styles.primaryBtnText}>Save dates</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </View>
-              </View>
-            );
-          })
+          catchUp.map((item, i) => renderScheduleItem(item, i))
+        )}
+
+        <Text style={[styles.section, { marginTop: 20 }]}>Upcoming (~1 month)</Text>
+        <Text style={styles.sectionHint}>
+          Unpaid after today through {forwardEnd}, sorted by pay-on (or due).
+        </Text>
+        {upcoming.length === 0 ? (
+          <Text style={styles.empty}>Nothing upcoming in the forward glance.</Text>
+        ) : (
+          upcoming.map((item, i) => renderScheduleItem(item, i))
         )}
 
         <Text style={[styles.section, { marginTop: 20 }]}>All obligations</Text>
@@ -356,6 +381,10 @@ export default function ObligationsScreen() {
               autoCapitalize="none"
               style={styles.input}
             />
+            <Text style={styles.hint}>
+              Backdate within {lookbackStart} → today to catch up, or set upcoming through{' '}
+              {forwardEnd}.
+            </Text>
             <Text style={styles.label}>Split into payments</Text>
             <View style={styles.chipRow}>
               {[1, 2, 3, 4].map((n) => {

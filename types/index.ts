@@ -117,12 +117,20 @@ export interface PaydayWaterfall {
   dueCount: number;
 }
 
+/** How many months of history Justin can enter through today (catch-up) */
+export type LookbackMonths = 1 | 2;
+
 export interface VaultState {
   income: IncomeProfile;
   payPeriod: PayPeriod;
   goal: SavingsGoal | null;
   obligations: Obligation[];
   spends: SpendEntry[];
+  /**
+   * Catch-up lookback: 1 or 2 months ending today.
+   * Default 2 — enter past bills/spends to bring the ledger current.
+   */
+  lookbackMonths: LookbackMonths;
   /**
    * False until Justin finishes first-run (his numbers or “explore sample”).
    * Fresh installs start here so demo data isn’t forced.

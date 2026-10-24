@@ -11,17 +11,26 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Colors from '@/constants/colors';
+import {
+  isInLookbackThroughToday,
+  planningLookbackStart,
+  planningWindowLabel,
+  todayIsoDate,
+} from '@/lib/planningWindow';
 import { stubParseScreenshot } from '@/lib/screenshotParse';
-import type { ObligationType, PayCadence, SpendBucket } from '@/types';
+import type { LookbackMonths, ObligationType, PayCadence, SpendBucket } from '@/types';
 import {
   bucketLabel,
   money,
   obligationTypeLabel,
   payCadenceLabel,
+  selectLookbackSpend,
   selectPeriodSpend,
   selectSpendAllowance,
   useVaultStore,
 } from '@/store/vaultStore';
+
+const LOOKBACK_OPTIONS: LookbackMonths[] = [1, 2];
 
 const BUCKETS: SpendBucket[] = ['needs', 'wants', 'eating_out', 'other'];
 const PAY_CADENCES: PayCadence[] = ['weekly', 'biweekly', 'semi_monthly', 'monthly'];
@@ -39,15 +48,19 @@ export default function SpendScreen() {
   const income = useVaultStore((s) => s.income);
   const payPeriod = useVaultStore((s) => s.payPeriod);
   const obligations = useVaultStore((s) => s.obligations);
+  const lookbackMonths = useVaultStore((s) => s.lookbackMonths);
   const addSpend = useVaultStore((s) => s.addSpend);
   const addObligation = useVaultStore((s) => s.addObligation);
   const setIncome = useVaultStore((s) => s.setIncome);
+  const setLookbackMonths = useVaultStore((s) => s.setLookbackMonths);
   const startFresh = useVaultStore((s) => s.startFresh);
   const loadDemo = useVaultStore((s) => s.loadDemo);
 
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [bucket, setBucket] = useState<SpendBucket>('wants');
+  const [spendDay, setSpendDay] = useState(todayIsoDate());
+  const [dateHint, setDateHint] = useState<string | null>(null);
 
   const [showIncome, setShowIncome] = useState(false);
   const [incomeAmount, setIncomeAmount] = useState(String(income.amountPerPaycheck || ''));
@@ -73,6 +86,11 @@ export default function SpendScreen() {
     () => selectPeriodSpend(spends, payPeriod),
     [spends, payPeriod]
   );
+  const lookbackSpend = useMemo(
+    () => selectLookbackSpend(spends, lookbackMonths),
+    [spends, lookbackMonths]
+  );
+  const lookbackStart = planningLookbackStart(lookbackMonths);
 
   const totals = useMemo(() => {
     const map: Record<SpendBucket, number> = {
@@ -81,16 +99,26 @@ export default function SpendScreen() {
       eating_out: 0,
       other: 0,
     };
-    for (const s of spends) map[s.bucket] += s.amount;
+    for (const s of spends) {
+      const day = s.at.slice(0, 10);
+      if (day >= lookbackStart && day <= todayIsoDate()) map[s.bucket] += s.amount;
+    }
     return map;
-  }, [spends]);
+  }, [spends, lookbackStart]);
 
   const submit = () => {
     const n = Number.parseFloat(amount.replace(/[^0-9.]/g, ''));
     if (!Number.isFinite(n) || n <= 0) return;
-    addSpend(n, bucket, note);
+    const day = spendDay.trim() || todayIsoDate();
+    if (!isInLookbackThroughToday(day, lookbackMonths)) {
+      setDateHint(`Use a date from ${lookbackStart} through today to catch up.`);
+      return;
+    }
+    setDateHint(null);
+    addSpend(n, bucket, note, day);
     setAmount('');
     setNote('');
+    setSpendDay(todayIsoDate());
   };
 
   const openIncome = () => {
@@ -163,10 +191,10 @@ export default function SpendScreen() {
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.brand}>Spend</Text>
         <Text style={styles.sub}>
-          Log against the payday spend pot ({money(periodSpend)} of {money(spendPot)} used). Pot
-          comes from your {payCadenceLabel(income.cadence).toLowerCase()} take-home of{' '}
-          {money(income.amountPerPaycheck)}. Screenshot import is local stub OCR — you always
-          confirm.
+          {planningWindowLabel(lookbackMonths)}. This pay period pot: {money(periodSpend)} of{' '}
+          {money(spendPot)} used ({payCadenceLabel(income.cadence).toLowerCase()}{' '}
+          {money(income.amountPerPaycheck)}). Lookback logged: {money(lookbackSpend)}. Screenshot
+          import is local stub OCR — you always confirm.
         </Text>
 
         <Text style={styles.label}>Amount</Text>
@@ -178,6 +206,23 @@ export default function SpendScreen() {
           placeholderTextColor={Colors.textMuted}
           style={styles.input}
         />
+
+        <Text style={styles.label}>Date (YYYY-MM-DD)</Text>
+        <TextInput
+          value={spendDay}
+          onChangeText={(t) => {
+            setSpendDay(t);
+            setDateHint(null);
+          }}
+          placeholder={todayIsoDate()}
+          placeholderTextColor={Colors.textMuted}
+          autoCapitalize="none"
+          style={styles.input}
+        />
+        <Text style={styles.hint}>
+          Backdate within {lookbackStart} → today to catch the ledger up. Defaults to today.
+        </Text>
+        {dateHint ? <Text style={styles.warn}>{dateHint}</Text> : null}
 
         <Text style={styles.label}>Bucket</Text>
         <View style={styles.bucketRow}>
@@ -355,7 +400,29 @@ export default function SpendScreen() {
           </View>
         ) : null}
 
-        <Text style={[styles.label, { marginTop: 20 }]}>Bucket glance</Text>
+        <Text style={[styles.label, { marginTop: 20 }]}>Planning lookback</Text>
+        <Text style={styles.hint}>
+          How far back you can enter bills and spends through today. Default is 2 months.
+        </Text>
+        <View style={styles.bucketRow}>
+          {LOOKBACK_OPTIONS.map((m) => {
+            const active = m === lookbackMonths;
+            return (
+              <Pressable
+                key={m}
+                onPress={() => setLookbackMonths(m)}
+                style={[styles.chip, active && styles.chipActive]}
+              >
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                  {m} month{m === 1 ? '' : 's'}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.incomeSummary}>{planningWindowLabel(lookbackMonths)}</Text>
+
+        <Text style={[styles.label, { marginTop: 20 }]}>Bucket glance (lookback)</Text>
         <View style={styles.glance}>
           {BUCKETS.map((b) => (
             <Text key={b} style={styles.glanceLine}>
@@ -495,6 +562,7 @@ const styles = StyleSheet.create({
   },
   billSuggest: { marginTop: 6, gap: 8 },
   hint: { fontSize: 13, lineHeight: 18, color: Colors.textMuted },
+  warn: { fontSize: 13, lineHeight: 18, color: Colors.danger, fontWeight: '600' },
   glance: { gap: 4 },
   glanceLine: { fontSize: 14, color: Colors.textSecondary },
   row: {
