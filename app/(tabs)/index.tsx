@@ -15,6 +15,7 @@ import {
   money,
   obligationTypeLabel,
   selectNextDue,
+  selectNextScheduled,
   selectPeriodSpend,
   selectTodaySpend,
   useVaultStore,
@@ -32,6 +33,11 @@ export default function HomeScreen() {
     [payPeriod, obligations]
   );
   const nextDue = selectNextDue(obligations);
+  const nextScheduled = selectNextScheduled(obligations);
+  const showNextScheduled =
+    !!nextScheduled &&
+    !!nextScheduled.scheduledPayOn &&
+    (!nextDue || nextScheduled.id !== nextDue.id);
   const todaySpend = selectTodaySpend(spends);
   const periodSpend = selectPeriodSpend(spends, payPeriod);
   const freeLeft = Math.max(0, waterfall.discretionary - periodSpend);
@@ -126,10 +132,16 @@ export default function HomeScreen() {
               <Text style={styles.body}>
                 {money(nextDue.amount)} · {obligationTypeLabel(nextDue.type)} · due{' '}
                 {nextDue.dueDate}
+                {nextDue.scheduledPayOn ? ` · pay on ${nextDue.scheduledPayOn}` : ''}
               </Text>
+              {showNextScheduled ? (
+                <Text style={styles.metaLine}>
+                  Next scheduled: {nextScheduled.name} · pay on {nextScheduled.scheduledPayOn}
+                </Text>
+              ) : null}
               <Link href="/obligations" asChild>
                 <Pressable style={styles.linkBtn}>
-                  <Text style={styles.linkBtnText}>All obligations</Text>
+                  <Text style={styles.linkBtnText}>Payment schedule</Text>
                 </Pressable>
               </Link>
             </>

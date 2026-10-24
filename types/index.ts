@@ -17,6 +17,11 @@ export interface Obligation {
   type: ObligationType;
   /** ISO date for next/this due */
   dueDate: string;
+  /**
+   * ISO date Justin plans to pay (local schedule — not bank autopay).
+   * Null/undefined = not scheduled yet.
+   */
+  scheduledPayOn?: string | null;
   cadence: Cadence;
   paid: boolean;
 }

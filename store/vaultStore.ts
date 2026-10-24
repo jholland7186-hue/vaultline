@@ -3,7 +3,9 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { seedGoal, seedObligations, seedPayPeriod, seedSpends } from '@/data/seed';
 import type {
+  Cadence,
   Obligation,
+  ObligationType,
   PaydayWaterfall,
   PayPeriod,
   SpendBucket,
@@ -11,10 +13,27 @@ import type {
   VaultState,
 } from '@/types';
 
+export type NewObligationInput = {
+  name: string;
+  amount: number;
+  type: ObligationType;
+  dueDate: string;
+  scheduledPayOn?: string | null;
+  cadence: Cadence;
+};
+
 interface VaultActions {
   hydrateDemoIfEmpty: () => void;
   markSaveCompleted: (done: boolean) => void;
   toggleObligationPaid: (id: string) => void;
+  setObligationScheduledPayOn: (id: string, scheduledPayOn: string | null) => void;
+  updateObligation: (
+    id: string,
+    patch: Partial<
+      Pick<Obligation, 'name' | 'amount' | 'type' | 'dueDate' | 'scheduledPayOn' | 'cadence'>
+    >
+  ) => void;
+  addObligation: (input: NewObligationInput) => void;
   addSpend: (amount: number, bucket: SpendBucket, note: string) => void;
   resetDemo: () => void;
 }
@@ -63,6 +82,49 @@ export function selectNextDue(obligations: Obligation[]): Obligation | null {
   const unpaid = obligations.filter((o) => !o.paid);
   if (unpaid.length === 0) return null;
   return [...unpaid].sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0] ?? null;
+}
+
+/** Sort key for payment schedule: planned pay-on, else due date */
+export function scheduleSortKey(o: Obligation): string {
+  return o.scheduledPayOn || o.dueDate;
+}
+
+/**
+ * Upcoming payment schedule across all types — unpaid first by pay-on (or due).
+ * Local planning only; not bank autopay.
+ */
+export function selectPaymentSchedule(obligations: Obligation[]): Obligation[] {
+  return [...obligations]
+    .filter((o) => !o.paid)
+    .sort((a, b) => scheduleSortKey(a).localeCompare(scheduleSortKey(b)));
+}
+
+/** Soonest unpaid item that has an explicit scheduled pay-on date */
+export function selectNextScheduled(obligations: Obligation[]): Obligation | null {
+  const scheduled = obligations.filter((o) => !o.paid && !!o.scheduledPayOn);
+  if (scheduled.length === 0) return null;
+  return [...scheduled].sort((a, b) =>
+    (a.scheduledPayOn as string).localeCompare(b.scheduledPayOn as string)
+  )[0] ?? null;
+}
+
+function normalizeObligation(o: Obligation): Obligation {
+  return {
+    ...o,
+    scheduledPayOn: o.scheduledPayOn ?? null,
+  };
+}
+
+/** Patch missing seed schedules onto matching ids (first migrate after feature lands) */
+function mergeSeedSchedules(obligations: Obligation[]): Obligation[] {
+  const byId = new Map(seedObligations.map((s) => [s.id, s]));
+  return obligations.map((o) => {
+    const seed = byId.get(o.id);
+    if (o.scheduledPayOn === undefined && seed && seed.scheduledPayOn !== undefined) {
+      return { ...o, scheduledPayOn: seed.scheduledPayOn };
+    }
+    return normalizeObligation(o);
+  });
 }
 
 export function selectTodaySpend(spends: SpendEntry[]): number {
@@ -154,13 +216,17 @@ export const useVaultStore = create<Store>()(
           set({
             payPeriod: seedPayPeriod,
             goal: seedGoal,
-            obligations: seedObligations,
+            obligations: seedObligations.map((o) => ({ ...o })),
             spends: seedSpends,
             hydrated: true,
           });
           return;
         }
-        set({ payPeriod: normalizePayPeriod(payPeriod), hydrated: true });
+        set({
+          payPeriod: normalizePayPeriod(payPeriod),
+          obligations: mergeSeedSchedules(obligations),
+          hydrated: true,
+        });
       },
 
       markSaveCompleted: (done) => {
@@ -195,6 +261,58 @@ export const useVaultStore = create<Store>()(
         });
       },
 
+      setObligationScheduledPayOn: (id, scheduledPayOn) => {
+        const cleaned =
+          scheduledPayOn && /^\d{4}-\d{2}-\d{2}$/.test(scheduledPayOn.trim())
+            ? scheduledPayOn.trim()
+            : null;
+        set({
+          obligations: get().obligations.map((o) =>
+            o.id === id ? { ...o, scheduledPayOn: cleaned } : o
+          ),
+        });
+      },
+
+      updateObligation: (id, patch) => {
+        set({
+          obligations: get().obligations.map((o) => {
+            if (o.id !== id) return o;
+            const next = { ...o, ...patch };
+            if (patch.scheduledPayOn !== undefined) {
+              const raw = patch.scheduledPayOn;
+              next.scheduledPayOn =
+                raw && /^\d{4}-\d{2}-\d{2}$/.test(String(raw).trim())
+                  ? String(raw).trim()
+                  : null;
+            }
+            return next;
+          }),
+        });
+      },
+
+      addObligation: (input) => {
+        const name = input.name.trim();
+        if (!name || !(input.amount > 0)) return;
+        const dueDate =
+          input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate.trim())
+            ? input.dueDate.trim()
+            : todayIso();
+        const scheduledRaw = input.scheduledPayOn?.trim() ?? '';
+        const scheduledPayOn =
+          scheduledRaw && /^\d{4}-\d{2}-\d{2}$/.test(scheduledRaw) ? scheduledRaw : null;
+        const entry: Obligation = {
+          id: `ob-${Date.now()}`,
+          name,
+          amount: input.amount,
+          type: input.type,
+          dueDate,
+          scheduledPayOn,
+          cadence: input.cadence,
+          paid: false,
+        };
+        set({ obligations: [...get().obligations, entry] });
+      },
+
       addSpend: (amount, bucket, note) => {
         const entry: SpendEntry = {
           id: `sp-${Date.now()}`,
@@ -216,7 +334,7 @@ export const useVaultStore = create<Store>()(
       },
     }),
     {
-      name: 'vaultline-local-v1',
+      name: 'vaultline-local-v2',
       storage: createJSONStorage(() => AsyncStorage),
       partialize: (s) => ({
         payPeriod: s.payPeriod,
