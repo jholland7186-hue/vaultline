@@ -10,11 +10,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { IncomeScheduleFields } from '@/components/IncomeScheduleFields';
 import Colors from '@/constants/colors';
 import { planningWindowLabel } from '@/lib/planningWindow';
 import type { PayCadence } from '@/types';
 import {
   computePaydayWaterfall,
+  incomeScheduleLabel,
   money,
   obligationTypeLabel,
   payCadenceLabel,
@@ -50,6 +52,14 @@ export default function HomeScreen() {
     income.amountPerPaycheck > 0 ? String(income.amountPerPaycheck) : ''
   );
   const [incomeCadence, setIncomeCadence] = useState<PayCadence>(income.cadence);
+  const [payWeekday, setPayWeekday] = useState(income.payWeekday ?? 4);
+  const [payMonthDay, setPayMonthDay] = useState(
+    income.payMonthDay != null ? String(income.payMonthDay) : '1'
+  );
+  const [payMonthDay2, setPayMonthDay2] = useState(
+    income.payMonthDay2 != null ? String(income.payMonthDay2) : '15'
+  );
+  const [payAnchorDate, setPayAnchorDate] = useState(income.payAnchorDate ?? '');
 
   const [editingSave, setEditingSave] = useState(false);
   const [saveAmount, setSaveAmount] = useState(
@@ -72,6 +82,10 @@ export default function HomeScreen() {
     if (!setupComplete) {
       setIncomeAmount(income.amountPerPaycheck > 0 ? String(income.amountPerPaycheck) : '');
       setIncomeCadence(income.cadence);
+      setPayWeekday(income.payWeekday ?? 4);
+      setPayMonthDay(income.payMonthDay != null ? String(income.payMonthDay) : '1');
+      setPayMonthDay2(income.payMonthDay2 != null ? String(income.payMonthDay2) : '15');
+      setPayAnchorDate(income.payAnchorDate ?? '');
       setSaveAmount(payPeriod.saveTarget > 0 ? String(payPeriod.saveTarget) : '');
       setGoalName(goal?.name ?? '');
       setGoalTarget(goal?.targetAmount ? String(goal.targetAmount) : '');
@@ -85,6 +99,17 @@ export default function HomeScreen() {
   const clearSampleAndPlan = () => {
     startFresh();
   };
+
+  const schedulePayload = () => ({
+    payWeekday: incomeCadence === 'weekly' || incomeCadence === 'biweekly' ? payWeekday : null,
+    payMonthDay:
+      incomeCadence === 'monthly' || incomeCadence === 'semi_monthly'
+        ? Number.parseInt(payMonthDay, 10) || 1
+        : null,
+    payMonthDay2:
+      incomeCadence === 'semi_monthly' ? Number.parseInt(payMonthDay2, 10) || 15 : null,
+    payAnchorDate: incomeCadence === 'biweekly' ? payAnchorDate.trim() || null : null,
+  });
 
   const waterfall = useMemo(
     () => computePaydayWaterfall(payPeriod, obligations),
@@ -109,13 +134,17 @@ export default function HomeScreen() {
   const openIncomeEdit = () => {
     setIncomeAmount(income.amountPerPaycheck > 0 ? String(income.amountPerPaycheck) : '');
     setIncomeCadence(income.cadence);
+    setPayWeekday(income.payWeekday ?? 4);
+    setPayMonthDay(income.payMonthDay != null ? String(income.payMonthDay) : '1');
+    setPayMonthDay2(income.payMonthDay2 != null ? String(income.payMonthDay2) : '15');
+    setPayAnchorDate(income.payAnchorDate ?? '');
     setEditingIncome(true);
   };
 
   const saveIncome = () => {
     const n = Number.parseFloat(incomeAmount.replace(/[^0-9.]/g, ''));
     if (!Number.isFinite(n) || n <= 0) return;
-    setIncome(n, incomeCadence);
+    setIncome(n, incomeCadence, schedulePayload());
     setEditingIncome(false);
   };
 
@@ -137,7 +166,7 @@ export default function HomeScreen() {
   const finishWithMyNumbers = () => {
     const n = Number.parseFloat(incomeAmount.replace(/[^0-9.]/g, ''));
     if (Number.isFinite(n) && n > 0) {
-      setIncome(n, incomeCadence);
+      setIncome(n, incomeCadence, schedulePayload());
     } else if (income.amountPerPaycheck <= 0) {
       return;
     }
@@ -218,6 +247,17 @@ export default function HomeScreen() {
                 );
               })}
             </View>
+            <IncomeScheduleFields
+              cadence={incomeCadence}
+              payWeekday={payWeekday}
+              payMonthDay={payMonthDay}
+              payMonthDay2={payMonthDay2}
+              payAnchorDate={payAnchorDate}
+              onWeekday={setPayWeekday}
+              onMonthDay={setPayMonthDay}
+              onMonthDay2={setPayMonthDay2}
+              onAnchorDate={setPayAnchorDate}
+            />
 
             <Text style={styles.label}>Save-first this period (optional)</Text>
             <TextInput
@@ -288,7 +328,7 @@ export default function HomeScreen() {
             </Text>
           ) : null}
           <Text style={styles.metaLine}>
-            {payCadenceLabel(income.cadence)} take-home {money(income.amountPerPaycheck)} ·{' '}
+            {incomeScheduleLabel(income)} · {money(income.amountPerPaycheck)} each payday ·{' '}
             {waterfall.dueCount} item{waterfall.dueCount === 1 ? '' : 's'} in {payPeriod.start} →{' '}
             {payPeriod.end}
           </Text>
@@ -325,6 +365,17 @@ export default function HomeScreen() {
                   );
                 })}
               </View>
+              <IncomeScheduleFields
+                cadence={incomeCadence}
+                payWeekday={payWeekday}
+                payMonthDay={payMonthDay}
+                payMonthDay2={payMonthDay2}
+                payAnchorDate={payAnchorDate}
+                onWeekday={setPayWeekday}
+                onMonthDay={setPayMonthDay}
+                onMonthDay2={setPayMonthDay2}
+                onAnchorDate={setPayAnchorDate}
+              />
               <Pressable onPress={saveIncome} style={styles.primaryBtn}>
                 <Text style={styles.primaryBtnText}>Save income</Text>
               </Pressable>

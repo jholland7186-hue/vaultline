@@ -1,11 +1,7 @@
-import type {
-  IncomeProfile,
-  Obligation,
-  PayCadence,
-  PayPeriod,
-  SavingsGoal,
-  SpendEntry,
-} from '@/types';
+import type { IncomeProfile, Obligation, PayPeriod, SavingsGoal, SpendEntry } from '@/types';
+import { periodBoundsForIncome, periodLengthDays } from '@/lib/scheduleRules';
+
+export { periodBoundsForIncome, periodLengthDays, periodBoundsForCadence } from '@/lib/scheduleRules';
 
 function isoDaysFromNow(days: number): string {
   const d = new Date();
@@ -14,52 +10,28 @@ function isoDaysFromNow(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Days in one pay period for a given paycheck cadence */
-export function periodLengthDays(cadence: PayCadence): number {
-  switch (cadence) {
-    case 'weekly':
-      return 7;
-    case 'biweekly':
-      return 14;
-    case 'semi_monthly':
-      return 15;
-    case 'monthly':
-      return 30;
-  }
-}
-
-export function periodBoundsForCadence(cadence: PayCadence): { start: string; end: string } {
-  const days = periodLengthDays(cadence);
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const day = start.getDay();
-  const mondayOffset = day === 0 ? -6 : 1 - day;
-  start.setDate(start.getDate() + mondayOffset);
-  const end = new Date(start);
-  end.setDate(end.getDate() + days - 1);
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
-  };
-}
-
 /**
- * Sample income — weekly like Justin. Fake number for the explore-demo path;
- * “Start fresh” clears this so he enters real take-home. Waterfall uses income
+ * Sample income — weekly Thursday like Justin. Fake number for explore-demo;
+ * “Start fresh” clears so he enters real take-home. Waterfall uses income
  * as the period inflow (not a hard-coded $2400).
  */
 export const seedIncome: IncomeProfile = {
   amountPerPaycheck: 980,
   cadence: 'weekly',
+  payWeekday: 4, // Thursday
 };
 
-/** Empty weekly shell for real planning — Justin fills amount + save + bills */
+/** Empty weekly shell for real planning — Justin fills amount + schedule + bills */
 export const freshIncome: IncomeProfile = {
   amountPerPaycheck: 0,
   cadence: 'weekly',
+  payWeekday: 4, // Thursday default
+  payMonthDay: null,
+  payMonthDay2: null,
+  payAnchorDate: null,
 };
 
-const bounds = periodBoundsForCadence(seedIncome.cadence);
+const bounds = periodBoundsForIncome(seedIncome);
 
 export const seedPayPeriod: PayPeriod = {
   start: bounds.start,
@@ -70,7 +42,7 @@ export const seedPayPeriod: PayPeriod = {
 };
 
 export function makeFreshPayPeriod(income: IncomeProfile = freshIncome): PayPeriod {
-  const b = periodBoundsForCadence(income.cadence);
+  const b = periodBoundsForIncome(income);
   return {
     start: b.start,
     end: b.end,

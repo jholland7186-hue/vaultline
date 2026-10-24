@@ -5,14 +5,21 @@ import {
   freshIncome,
   isSampleVault,
   makeFreshPayPeriod,
-  periodBoundsForCadence,
-  periodLengthDays,
   seedGoal,
   seedIncome,
   seedObligations,
   seedPayPeriod,
   seedSpends,
 } from '@/data/seed';
+import {
+  incomeScheduleLabel,
+  nextDueAfterPaid,
+  nextDueOnOrAfter,
+  normalizeMonthDay,
+  normalizeWeekday,
+  obligationRecurrenceLabel,
+  periodBoundsForIncome,
+} from '@/lib/scheduleRules';
 import {
   DEFAULT_LOOKBACK_MONTHS,
   forwardGlanceEnd,
@@ -46,14 +53,27 @@ export type NewObligationInput = {
   dueDate: string;
   scheduledPayOn?: string | null;
   cadence: Cadence;
+  recurWeekday?: number | null;
+  recurMonthDay?: number | null;
   /** Optional split into N equal (or custom) installments with pay-on dates */
   installments?: Array<{ amount: number; scheduledPayOn?: string | null }>;
+};
+
+export type IncomeScheduleInput = {
+  payWeekday?: number | null;
+  payMonthDay?: number | null;
+  payMonthDay2?: number | null;
+  payAnchorDate?: string | null;
 };
 
 interface VaultActions {
   hydrateDemoIfEmpty: () => void;
   markSaveCompleted: (done: boolean) => void;
-  setIncome: (amountPerPaycheck: number, cadence: PayCadence) => void;
+  setIncome: (
+    amountPerPaycheck: number,
+    cadence: PayCadence,
+    schedule?: IncomeScheduleInput
+  ) => void;
   setSaveTarget: (amount: number) => void;
   setGoal: (goal: SavingsGoal | null) => void;
   /** 1 or 2 months of catch-up history through today */
@@ -74,7 +94,17 @@ interface VaultActions {
   updateObligation: (
     id: string,
     patch: Partial<
-      Pick<Obligation, 'name' | 'amount' | 'type' | 'dueDate' | 'scheduledPayOn' | 'cadence'>
+      Pick<
+        Obligation,
+        | 'name'
+        | 'amount'
+        | 'type'
+        | 'dueDate'
+        | 'scheduledPayOn'
+        | 'cadence'
+        | 'recurWeekday'
+        | 'recurMonthDay'
+      >
     >
   ) => void;
   addObligation: (input: NewObligationInput) => void;
@@ -149,6 +179,8 @@ export function payCadenceLabel(cadence: PayCadence): string {
       return 'Monthly';
   }
 }
+
+export { incomeScheduleLabel, obligationRecurrenceLabel };
 
 export function bucketLabel(bucket: SpendBucket): string {
   switch (bucket) {
@@ -356,7 +388,20 @@ function normalizeObligation(o: Obligation): Obligation {
   const base: Obligation = {
     ...o,
     scheduledPayOn: o.scheduledPayOn ?? null,
+    recurWeekday: normalizeWeekday(o.recurWeekday ?? null),
+    recurMonthDay: normalizeMonthDay(o.recurMonthDay ?? null),
   };
+  // Infer month-day from due date when monthly recurring and unset
+  if (base.cadence === 'monthly' && base.recurMonthDay == null && isIsoDate(base.dueDate)) {
+    base.recurMonthDay = Number.parseInt(base.dueDate.slice(8, 10), 10);
+  }
+  if (
+    (base.cadence === 'weekly' || base.cadence === 'biweekly') &&
+    base.recurWeekday == null &&
+    isIsoDate(base.dueDate)
+  ) {
+    base.recurWeekday = new Date(base.dueDate + 'T12:00:00').getDay();
+  }
   if (Array.isArray(o.installments) && o.installments.length > 0) {
     base.installments = o.installments.map((i) => ({
       ...i,
@@ -473,19 +518,10 @@ function buildPayPeriodFromIncome(
   income: IncomeProfile,
   prev?: PayPeriod
 ): PayPeriod {
-  const bounds = periodBoundsForCadence(income.cadence);
-  let start = bounds.start;
-  let end = bounds.end;
-  if (prev?.start && isIsoDate(prev.start)) {
-    start = prev.start;
-    const startDate = new Date(prev.start + 'T12:00:00');
-    const endDate = new Date(startDate);
-    endDate.setDate(endDate.getDate() + periodLengthDays(income.cadence) - 1);
-    end = endDate.toISOString().slice(0, 10);
-  }
+  const bounds = periodBoundsForIncome(income);
   return {
-    start,
-    end,
+    start: bounds.start,
+    end: bounds.end,
     paycheckAmount: Math.max(0, income.amountPerPaycheck),
     saveTarget: prev?.saveTarget ?? seedPayPeriod.saveTarget,
     saveCompleted: prev?.saveCompleted ?? false,
@@ -498,10 +534,29 @@ function normalizeIncome(income: IncomeProfile | undefined): IncomeProfile {
     typeof income.amountPerPaycheck === 'number' &&
     income.cadence
   ) {
-    return {
+    const base: IncomeProfile = {
       amountPerPaycheck: Math.max(0, income.amountPerPaycheck),
       cadence: income.cadence,
+      payWeekday: normalizeWeekday(income.payWeekday ?? null),
+      payMonthDay: normalizeMonthDay(income.payMonthDay ?? null),
+      payMonthDay2: normalizeMonthDay(income.payMonthDay2 ?? null),
+      payAnchorDate: cleanIsoDate(income.payAnchorDate ?? null),
     };
+    // Defaults: weekly → Thursday (Justin); semi_monthly → 1 & 15 if unset
+    if (
+      (base.cadence === 'weekly' || base.cadence === 'biweekly') &&
+      base.payWeekday == null
+    ) {
+      base.payWeekday = 4;
+    }
+    if (base.cadence === 'semi_monthly') {
+      if (base.payMonthDay == null) base.payMonthDay = 1;
+      if (base.payMonthDay2 == null) base.payMonthDay2 = 15;
+    }
+    if (base.cadence === 'monthly' && base.payMonthDay == null) {
+      base.payMonthDay = 1;
+    }
+    return base;
   }
   // Empty / corrupt → blank shell, never re-inject sample paycheck
   return { ...freshIncome };
@@ -605,13 +660,32 @@ export const useVaultStore = create<Store>()(
         });
       },
 
-      setIncome: (amountPerPaycheck, cadence) => {
+      setIncome: (amountPerPaycheck, cadence, schedule) => {
         const amount = Math.max(0, amountPerPaycheck);
-        const income: IncomeProfile = { amountPerPaycheck: amount, cadence };
-        const { payPeriod } = get();
+        const { income: prevIncome, payPeriod } = get();
+        const merged: IncomeProfile = normalizeIncome({
+          amountPerPaycheck: amount,
+          cadence,
+          payWeekday:
+            schedule && 'payWeekday' in schedule
+              ? schedule.payWeekday
+              : prevIncome.payWeekday,
+          payMonthDay:
+            schedule && 'payMonthDay' in schedule
+              ? schedule.payMonthDay
+              : prevIncome.payMonthDay,
+          payMonthDay2:
+            schedule && 'payMonthDay2' in schedule
+              ? schedule.payMonthDay2
+              : prevIncome.payMonthDay2,
+          payAnchorDate:
+            schedule && 'payAnchorDate' in schedule
+              ? schedule.payAnchorDate
+              : prevIncome.payAnchorDate,
+        });
         set({
-          income,
-          payPeriod: buildPayPeriodFromIncome(income, payPeriod),
+          income: merged,
+          payPeriod: buildPayPeriodFromIncome(merged, payPeriod),
         });
       },
 
@@ -710,6 +784,22 @@ export const useVaultStore = create<Store>()(
                 installments: o.installments.map((i) => ({ ...i, paid: nextPaid })),
               });
             }
+            // Recurring bill: "paid this cycle" → roll due forward, stay unpaid for next
+            if (o.cadence !== 'once' && !o.paid) {
+              const nextDue = nextDueAfterPaid(o.dueDate, {
+                cadence: o.cadence,
+                recurWeekday: o.recurWeekday,
+                recurMonthDay: o.recurMonthDay,
+              });
+              if (nextDue) {
+                return {
+                  ...o,
+                  paid: false,
+                  dueDate: nextDue,
+                  scheduledPayOn: null,
+                };
+              }
+            }
             return { ...o, paid: !o.paid };
           }),
         });
@@ -767,7 +857,17 @@ export const useVaultStore = create<Store>()(
       addObligation: (input) => {
         const name = input.name.trim();
         if (!name || !(input.amount > 0)) return;
-        const dueDate = cleanIsoDate(input.dueDate) ?? todayIso();
+        const recurWeekday = normalizeWeekday(input.recurWeekday ?? null);
+        const recurMonthDay = normalizeMonthDay(input.recurMonthDay ?? null);
+        let dueDate = cleanIsoDate(input.dueDate) ?? todayIso();
+        // Align due to recurrence rule when set
+        if (input.cadence !== 'once') {
+          dueDate = nextDueOnOrAfter(dueDate, {
+            cadence: input.cadence,
+            recurWeekday,
+            recurMonthDay,
+          });
+        }
         const scheduledPayOn = cleanIsoDate(input.scheduledPayOn ?? null);
 
         let installments: PaymentInstallment[] | undefined;
@@ -790,6 +890,8 @@ export const useVaultStore = create<Store>()(
           dueDate,
           scheduledPayOn: installments?.length ? null : scheduledPayOn,
           cadence: input.cadence,
+          recurWeekday,
+          recurMonthDay,
           paid: false,
           ...(installments?.length ? { installments } : {}),
         };

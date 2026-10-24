@@ -21,6 +21,17 @@ export interface IncomeProfile {
   /** Take-home (or usable) amount per payday — calm entry, no judgment */
   amountPerPaycheck: number;
   cadence: PayCadence;
+  /**
+   * Payday weekday for weekly / biweekly (0=Sun … 6=Sat).
+   * Justin: Thursday = 4.
+   */
+  payWeekday?: number | null;
+  /** Day of month 1–31 for monthly, or one of the two semi-monthly paydays */
+  payMonthDay?: number | null;
+  /** Second day of month for semi_monthly (e.g. 2 and 15) */
+  payMonthDay2?: number | null;
+  /** Known payday ISO date to anchor a biweekly series */
+  payAnchorDate?: string | null;
 }
 
 /** One partial payment toward an obligation (e.g. half of a phone bill) */
@@ -47,9 +58,15 @@ export interface Obligation {
    */
   scheduledPayOn?: string | null;
   cadence: Cadence;
+  /** Weekday for weekly / biweekly recurring bills (0=Sun … 6=Sat) */
+  recurWeekday?: number | null;
+  /** Day of month 1–31 for monthly recurring bills */
+  recurMonthDay?: number | null;
   /**
    * Whole-obligation paid flag. When installments exist, true only if all
    * installments are paid (kept in sync by the store).
+   * For recurring (cadence !== once) without installments, marking paid
+   * advances dueDate to the next cycle and clears paid.
    */
   paid: boolean;
   /**

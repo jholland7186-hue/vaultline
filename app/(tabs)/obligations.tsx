@@ -15,9 +15,11 @@ import {
   planningWindowLabel,
   todayIsoDate,
 } from '@/lib/planningWindow';
+import { WEEKDAYS } from '@/lib/scheduleRules';
 import type { Cadence, ObligationType, ScheduleItem } from '@/types';
 import {
   money,
+  obligationRecurrenceLabel,
   obligationTypeLabel,
   selectCatchUpSchedule,
   selectForwardSchedule,
@@ -36,6 +38,19 @@ const TYPES: ObligationType[] = [
 ];
 
 const CADENCES: Cadence[] = ['once', 'weekly', 'biweekly', 'monthly'];
+
+function cadenceChipLabel(c: Cadence): string {
+  switch (c) {
+    case 'once':
+      return 'One-time';
+    case 'weekly':
+      return 'Weekly';
+    case 'biweekly':
+      return 'Every 2 weeks';
+    case 'monthly':
+      return 'Monthly';
+  }
+}
 
 function todayIso(): string {
   return todayIsoDate();
@@ -75,6 +90,8 @@ export default function ObligationsScreen() {
   const [payOn, setPayOn] = useState('');
   const [splitInto, setSplitInto] = useState(1);
   const [splitPayOn2, setSplitPayOn2] = useState('');
+  const [recurWeekday, setRecurWeekday] = useState(4);
+  const [recurMonthDay, setRecurMonthDay] = useState('1');
 
   const lookbackStart = planningLookbackStart(lookbackMonths);
   const forwardEnd = forwardGlanceEnd();
@@ -222,6 +239,9 @@ export default function ObligationsScreen() {
       cadence,
       dueDate: dueDate.trim() || todayIso(),
       scheduledPayOn: splitInto >= 2 ? null : payOn.trim() || null,
+      recurWeekday: cadence === 'weekly' || cadence === 'biweekly' ? recurWeekday : null,
+      recurMonthDay:
+        cadence === 'monthly' ? Number.parseInt(recurMonthDay, 10) || 1 : null,
       installments,
     });
     setName('');
@@ -230,6 +250,9 @@ export default function ObligationsScreen() {
     setSplitPayOn2('');
     setSplitInto(1);
     setDueDate(todayIso());
+    setCadence('monthly');
+    setRecurWeekday(4);
+    setRecurMonthDay('1');
     setShowAdd(false);
   };
 
@@ -289,7 +312,7 @@ export default function ObligationsScreen() {
                   <Text style={[styles.amount, o.paid && styles.struck]}>{money(o.amount)}</Text>
                 </View>
                 <Text style={styles.meta}>
-                  {obligationTypeLabel(o.type)} · {o.cadence} · due {o.dueDate}
+                  {obligationTypeLabel(o.type)} · {obligationRecurrenceLabel(o)} · due {o.dueDate}
                   {split ? ` · split ${o.installments!.length} ways` : ''}
                 </Text>
                 {split ? (
@@ -324,7 +347,9 @@ export default function ObligationsScreen() {
                     ? 'Paid'
                     : split
                       ? `${money(remaining)} left — tap name to mark all paid`
-                      : 'Unpaid — tap to mark paid'}
+                      : o.cadence !== 'once'
+                        ? 'Unpaid — tap to mark paid (rolls to next cycle)'
+                        : 'Unpaid — tap to mark paid'}
                 </Text>
               </Pressable>
               <Pressable onPress={() => removeObligation(o.id)} style={styles.removeWrap}>
@@ -379,7 +404,7 @@ export default function ObligationsScreen() {
                 );
               })}
             </View>
-            <Text style={styles.label}>Cadence</Text>
+            <Text style={styles.label}>Repeats</Text>
             <View style={styles.chipRow}>
               {CADENCES.map((c) => {
                 const active = c === cadence;
@@ -389,12 +414,57 @@ export default function ObligationsScreen() {
                     onPress={() => setCadence(c)}
                     style={[styles.chip, active && styles.chipActive]}
                   >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{c}</Text>
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                      {cadenceChipLabel(c)}
+                    </Text>
                   </Pressable>
                 );
               })}
             </View>
-            <Text style={styles.label}>Due date (YYYY-MM-DD)</Text>
+            {cadence === 'weekly' || cadence === 'biweekly' ? (
+              <>
+                <Text style={styles.label}>Due weekday</Text>
+                <View style={styles.chipRow}>
+                  {WEEKDAYS.map((d) => {
+                    const active = d.value === recurWeekday;
+                    return (
+                      <Pressable
+                        key={d.value}
+                        onPress={() => setRecurWeekday(d.value)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                          {d.short}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            ) : null}
+            {cadence === 'monthly' ? (
+              <>
+                <Text style={styles.label}>Due day of month (1–31)</Text>
+                <TextInput
+                  value={recurMonthDay}
+                  onChangeText={setRecurMonthDay}
+                  keyboardType="number-pad"
+                  placeholder="1"
+                  placeholderTextColor={Colors.textMuted}
+                  style={styles.input}
+                />
+                <Text style={styles.hint}>
+                  Static bills (rent, insurance, subscriptions) — set the day they hit each month.
+                  Marking paid rolls to the next month.
+                </Text>
+              </>
+            ) : null}
+            {cadence !== 'once' && cadence !== 'monthly' ? (
+              <Text style={styles.hint}>
+                Recurring payment — marking paid advances to the next cycle automatically.
+              </Text>
+            ) : null}
+            <Text style={styles.label}>Next / catch-up due (YYYY-MM-DD)</Text>
             <TextInput
               value={dueDate}
               onChangeText={setDueDate}
@@ -404,8 +474,8 @@ export default function ObligationsScreen() {
               style={styles.input}
             />
             <Text style={styles.hint}>
-              Backdate within {lookbackStart} → today to catch up, or set upcoming through{' '}
-              {forwardEnd}.
+              Aligns to your repeat rule from this date. Catch up within {lookbackStart} → today, or
+              upcoming through {forwardEnd}.
             </Text>
             <Text style={styles.label}>Split into payments</Text>
             <View style={styles.chipRow}>

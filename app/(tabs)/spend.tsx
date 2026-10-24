@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { IncomeScheduleFields } from '@/components/IncomeScheduleFields';
 import Colors from '@/constants/colors';
 import { extractTextFromUri, isOcrAvailable } from '@/lib/ocr';
 import {
@@ -29,6 +30,7 @@ import { pickBankStatement } from '@/lib/statementImport';
 import type { LookbackMonths, ObligationType, PayCadence, SpendBucket } from '@/types';
 import {
   bucketLabel,
+  incomeScheduleLabel,
   money,
   obligationTypeLabel,
   payCadenceLabel,
@@ -92,6 +94,14 @@ export default function SpendScreen() {
   const [showIncome, setShowIncome] = useState(false);
   const [incomeAmount, setIncomeAmount] = useState(String(income.amountPerPaycheck || ''));
   const [incomeCadence, setIncomeCadence] = useState<PayCadence>(income.cadence);
+  const [payWeekday, setPayWeekday] = useState(income.payWeekday ?? 4);
+  const [payMonthDay, setPayMonthDay] = useState(
+    income.payMonthDay != null ? String(income.payMonthDay) : '1'
+  );
+  const [payMonthDay2, setPayMonthDay2] = useState(
+    income.payMonthDay2 != null ? String(income.payMonthDay2) : '15'
+  );
+  const [payAnchorDate, setPayAnchorDate] = useState(income.payAnchorDate ?? '');
 
   const [shotUris, setShotUris] = useState<string[]>([]);
   const [shotName, setShotName] = useState('');
@@ -162,13 +172,26 @@ export default function SpendScreen() {
   const openIncome = () => {
     setIncomeAmount(income.amountPerPaycheck > 0 ? String(income.amountPerPaycheck) : '');
     setIncomeCadence(income.cadence);
+    setPayWeekday(income.payWeekday ?? 4);
+    setPayMonthDay(income.payMonthDay != null ? String(income.payMonthDay) : '1');
+    setPayMonthDay2(income.payMonthDay2 != null ? String(income.payMonthDay2) : '15');
+    setPayAnchorDate(income.payAnchorDate ?? '');
     setShowIncome(true);
   };
 
   const saveIncome = () => {
     const n = Number.parseFloat(incomeAmount.replace(/[^0-9.]/g, ''));
     if (!Number.isFinite(n) || n <= 0) return;
-    setIncome(n, incomeCadence);
+    setIncome(n, incomeCadence, {
+      payWeekday: incomeCadence === 'weekly' || incomeCadence === 'biweekly' ? payWeekday : null,
+      payMonthDay:
+        incomeCadence === 'monthly' || incomeCadence === 'semi_monthly'
+          ? Number.parseInt(payMonthDay, 10) || 1
+          : null,
+      payMonthDay2:
+        incomeCadence === 'semi_monthly' ? Number.parseInt(payMonthDay2, 10) || 15 : null,
+      payAnchorDate: incomeCadence === 'biweekly' ? payAnchorDate.trim() || null : null,
+    });
     setShowIncome(false);
   };
 
@@ -632,7 +655,7 @@ export default function SpendScreen() {
 
         <Text style={[styles.label, { marginTop: 20 }]}>Income & pay schedule</Text>
         <Text style={styles.incomeSummary}>
-          {payCadenceLabel(income.cadence)} · {money(income.amountPerPaycheck)} each payday
+          {incomeScheduleLabel(income)} · {money(income.amountPerPaycheck)} each payday
         </Text>
         <Pressable onPress={() => (showIncome ? setShowIncome(false) : openIncome())}>
           <Text style={styles.link}>{showIncome ? 'Cancel' : 'Edit what you make'}</Text>
@@ -640,7 +663,8 @@ export default function SpendScreen() {
         {showIncome ? (
           <View style={styles.incomeBox}>
             <Text style={styles.hint}>
-              Take-home per payday. Waterfall uses it as period inflow — practical numbers only.
+              Take-home per payday. Set the weekday or month days you actually get paid — waterfall
+              uses that period.
             </Text>
             <Text style={styles.label}>Amount per payday</Text>
             <TextInput
@@ -668,6 +692,17 @@ export default function SpendScreen() {
                 );
               })}
             </View>
+            <IncomeScheduleFields
+              cadence={incomeCadence}
+              payWeekday={payWeekday}
+              payMonthDay={payMonthDay}
+              payMonthDay2={payMonthDay2}
+              payAnchorDate={payAnchorDate}
+              onWeekday={setPayWeekday}
+              onMonthDay={setPayMonthDay}
+              onMonthDay2={setPayMonthDay2}
+              onAnchorDate={setPayAnchorDate}
+            />
             <Pressable onPress={saveIncome} style={styles.primaryBtn}>
               <Text style={styles.primaryBtnText}>Save income</Text>
             </Pressable>
