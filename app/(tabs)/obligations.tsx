@@ -21,6 +21,7 @@ import {
   obligationTypeLabel,
   selectCatchUpSchedule,
   selectForwardSchedule,
+  selectIsSampleVault,
   unpaidAmount,
   useVaultStore,
 } from '@/store/vaultStore';
@@ -56,6 +57,10 @@ export default function ObligationsScreen() {
   const setInstallmentScheduledPayOn = useVaultStore((s) => s.setInstallmentScheduledPayOn);
   const updateObligation = useVaultStore((s) => s.updateObligation);
   const addObligation = useVaultStore((s) => s.addObligation);
+  const removeObligation = useVaultStore((s) => s.removeObligation);
+  const startFresh = useVaultStore((s) => s.startFresh);
+  const goal = useVaultStore((s) => s.goal);
+  const spends = useVaultStore((s) => s.spends);
 
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editPayOn, setEditPayOn] = useState('');
@@ -73,6 +78,7 @@ export default function ObligationsScreen() {
 
   const lookbackStart = planningLookbackStart(lookbackMonths);
   const forwardEnd = forwardGlanceEnd();
+  const showingSample = selectIsSampleVault({ obligations, spends, goal });
   const catchUp = useMemo(
     () => selectCatchUpSchedule(obligations, lookbackMonths),
     [obligations, lookbackMonths]
@@ -236,6 +242,19 @@ export default function ObligationsScreen() {
           paid. Local schedule only — not bank autopay. Upcoming glance through {forwardEnd}.
         </Text>
 
+        {showingSample ? (
+          <View style={styles.sampleBanner}>
+            <Text style={styles.sampleTitle}>Sample bills are loaded</Text>
+            <Text style={styles.sectionHint}>
+              Clear the sample to add your real rent, cards, and phone — or remove one bill at a
+              time below.
+            </Text>
+            <Pressable onPress={startFresh} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>Clear sample & start over</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
         <Text style={styles.section}>Catch up (lookback → today)</Text>
         <Text style={styles.sectionHint}>
           Unpaid from {lookbackStart} through today — bring the ledger current. Splits show each
@@ -307,6 +326,9 @@ export default function ObligationsScreen() {
                       ? `${money(remaining)} left — tap name to mark all paid`
                       : 'Unpaid — tap to mark paid'}
                 </Text>
+              </Pressable>
+              <Pressable onPress={() => removeObligation(o.id)} style={styles.removeWrap}>
+                <Text style={styles.removeText}>Remove</Text>
               </Pressable>
             </View>
           );
@@ -579,4 +601,21 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   primaryBtnText: { color: Colors.cream, fontWeight: '700', fontSize: 15 },
+  sampleBanner: {
+    gap: 6,
+    padding: 14,
+    marginBottom: 8,
+    backgroundColor: Colors.cream,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: Colors.copper,
+  },
+  sampleTitle: { fontSize: 16, fontWeight: '700', color: Colors.text },
+  removeWrap: { marginTop: 8, alignSelf: 'flex-start' },
+  removeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.danger,
+    textDecorationLine: 'underline',
+  },
 });

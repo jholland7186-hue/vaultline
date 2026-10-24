@@ -25,12 +25,14 @@ import {
   type DetectedKind,
   type DetectedLine,
 } from '@/lib/screenshotParse';
+import { pickBankStatement } from '@/lib/statementImport';
 import type { LookbackMonths, ObligationType, PayCadence, SpendBucket } from '@/types';
 import {
   bucketLabel,
   money,
   obligationTypeLabel,
   payCadenceLabel,
+  selectIsSampleVault,
   selectLookbackIncome,
   selectLookbackSpend,
   selectPeriodSpend,
@@ -77,6 +79,9 @@ export default function SpendScreen() {
   const setLookbackMonths = useVaultStore((s) => s.setLookbackMonths);
   const startFresh = useVaultStore((s) => s.startFresh);
   const loadDemo = useVaultStore((s) => s.loadDemo);
+  const removeSpend = useVaultStore((s) => s.removeSpend);
+  const removeIncomeEvent = useVaultStore((s) => s.removeIncomeEvent);
+  const goal = useVaultStore((s) => s.goal);
 
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
@@ -97,6 +102,7 @@ export default function SpendScreen() {
   const [detected, setDetected] = useState<DetectedLine[]>([]);
   const [cHint, setCHint] = useState('');
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [importSource, setImportSource] = useState<'screenshot' | 'statement'>('screenshot');
 
   const spendPot = useMemo(
     () => selectSpendAllowance(payPeriod, obligations),
@@ -115,6 +121,7 @@ export default function SpendScreen() {
     [incomeEvents, lookbackMonths]
   );
   const lookbackStart = planningLookbackStart(lookbackMonths);
+  const showingSample = selectIsSampleVault({ obligations, spends, goal });
   const recent = useMemo(
     () => selectRecentHistory(spends, incomeEvents ?? [], 14),
     [spends, incomeEvents]
@@ -205,6 +212,7 @@ export default function SpendScreen() {
   };
 
   const pickScreenshots = async () => {
+    setImportSource('screenshot');
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       quality: 0.8,
@@ -219,7 +227,33 @@ export default function SpendScreen() {
     await readUris(uris, name);
   };
 
+  const pickStatement = async () => {
+    setImportSource('statement');
+    setReading(true);
+    setOcrNote('');
+    try {
+      const picked = await pickBankStatement();
+      if (!picked.ok) {
+        if (!picked.canceled) setOcrNote(picked.message);
+        return;
+      }
+      setShotName(picked.name);
+      if (picked.kind === 'image') {
+        setShotUris([picked.uri]);
+        await readUris([picked.uri], picked.name);
+        return;
+      }
+      setShotUris([]);
+      const combined = [picked.text ?? '', pastedText].filter(Boolean).join('\n\n');
+      setOcrNote('Read statement / export text. Review each line before anything is saved.');
+      openReview(combined, picked.name);
+    } finally {
+      setReading(false);
+    }
+  };
+
   const captureScreenshot = async () => {
+    setImportSource('screenshot');
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
       setOcrNote('Camera permission is needed to capture a bank or Cash App screen.');
@@ -283,7 +317,7 @@ export default function SpendScreen() {
       const label = line.label.trim() || (line.kind === 'income' ? 'Paycheck / deposit' : 'Screenshot line');
 
       if (line.kind === 'income') {
-        addIncomeEvent(n, label, day, 'screenshot');
+        addIncomeEvent(n, label, day, importSource);
         saved += 1;
         continue;
       }
@@ -393,10 +427,24 @@ export default function SpendScreen() {
           <Text style={styles.primaryBtnText}>Log spend</Text>
         </Pressable>
 
-        <Text style={[styles.label, { marginTop: 22 }]}>Screenshot history catch-up</Text>
+        {showingSample ? (
+          <View style={styles.sampleBanner}>
+            <Text style={styles.sampleTitle}>Sample data is loaded</Text>
+            <Text style={styles.hint}>
+              Clear the sample week before importing your real history — or remove lines one at a
+              time below.
+            </Text>
+            <Pressable onPress={startFresh} style={styles.primaryBtn}>
+              <Text style={styles.primaryBtnText}>Clear sample & enter my numbers</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <Text style={[styles.label, { marginTop: 22 }]}>Import income & spending history</Text>
         <Text style={styles.hint}>
-          Pick or capture bank, Cash App, paycheck, or transaction screens. We read what we can
-          (on-device when available), you classify income vs spend, then confirm — nothing silent.
+          Screenshot your bank / Cash App / paycheck screens, or upload a statement image / CSV /
+          TXT export. On-device read when available — you classify income vs spend, then confirm.
+          Nothing silent. PDFs work best as CSV export or page screenshots.
         </Text>
         <View style={styles.shotActions}>
           <Pressable onPress={pickScreenshots} style={styles.secondaryBtn} disabled={reading}>
@@ -405,11 +453,14 @@ export default function SpendScreen() {
           <Pressable onPress={captureScreenshot} style={styles.secondaryBtn} disabled={reading}>
             <Text style={styles.secondaryBtnText}>Take photo</Text>
           </Pressable>
+          <Pressable onPress={pickStatement} style={styles.secondaryBtn} disabled={reading}>
+            <Text style={styles.secondaryBtnText}>Upload statement / CSV</Text>
+          </Pressable>
         </View>
         {reading ? (
           <View style={styles.readingRow}>
             <ActivityIndicator color={Colors.forest} />
-            <Text style={styles.hint}>Reading screenshot…</Text>
+            <Text style={styles.hint}>Reading…</Text>
           </View>
         ) : null}
         {ocrNote ? <Text style={styles.hint}>{ocrNote}</Text> : null}
@@ -670,6 +721,15 @@ export default function SpendScreen() {
                     : bucketLabel(row.bucket)}{' '}
                   · {row.at.slice(0, 10)}
                 </Text>
+                <Pressable
+                  onPress={() =>
+                    row.kind === 'income'
+                      ? removeIncomeEvent(row.id)
+                      : removeSpend(row.id)
+                  }
+                >
+                  <Text style={styles.removeText}>Remove</Text>
+                </Pressable>
               </View>
               <Text
                 style={[
@@ -684,11 +744,15 @@ export default function SpendScreen() {
           ))
         )}
 
-        <Pressable onPress={startFresh} style={styles.resetBtn}>
-          <Text style={styles.resetText}>Start fresh with my numbers</Text>
+        <Pressable onPress={startFresh} style={styles.primaryBtn}>
+          <Text style={styles.primaryBtnText}>
+            {showingSample ? 'Clear sample & enter my numbers' : 'Clear everything & start over'}
+          </Text>
         </Pressable>
         <Pressable onPress={loadDemo} style={styles.resetBtn}>
-          <Text style={styles.resetText}>Reload sample week</Text>
+          <Text style={styles.resetText}>
+            {showingSample ? 'Reload sample week' : 'Load sample week (optional)'}
+          </Text>
         </Pressable>
       </ScrollView>
     </SafeAreaView>
@@ -832,4 +896,21 @@ const styles = StyleSheet.create({
   rowAmountIncome: { color: Colors.forest },
   resetBtn: { marginTop: 16, alignSelf: 'center', padding: 8 },
   resetText: { fontSize: 13, color: Colors.textMuted, textDecorationLine: 'underline' },
+  sampleBanner: {
+    gap: 6,
+    padding: 14,
+    marginBottom: 8,
+    backgroundColor: Colors.cream,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: Colors.copper,
+  },
+  sampleTitle: { fontSize: 16, fontWeight: '700', color: Colors.text },
+  removeText: {
+    marginTop: 4,
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.danger,
+    textDecorationLine: 'underline',
+  },
 });

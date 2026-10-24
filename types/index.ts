@@ -94,7 +94,7 @@ export interface IncomeEvent {
   note: string;
   /** ISO datetime */
   at: string;
-  source?: 'manual' | 'screenshot';
+  source?: 'manual' | 'screenshot' | 'statement';
 }
 
 export interface SavingsGoal {
